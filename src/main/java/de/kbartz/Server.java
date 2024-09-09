@@ -5,6 +5,7 @@ import org.oxoo2a.sim4da.Node;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Random;
 import java.util.concurrent.*;
 
@@ -27,15 +28,29 @@ public class Server extends Node {
     private int lastApplied = 0;
     private ServerType serverType = ServerType.FOLLOWER;
     private final int voteTimeout;
+    private long lastElectionTime = System.nanoTime();
 
     // volatile state on leaders, to be reinitialized after election
     private final HashMap<String, Integer> nextIndex = new HashMap<>();
     private final HashMap<String, Integer> matchIndex = new HashMap<>();
 
-    public Server(String name) {
+    public Server(String name, ArrayList<String> members) {
         super(name);
+        this.id = name;
         Random r = new Random();
         voteTimeout = r.nextInt(voteTimeoutUpperLimit - voteTimeoutLowerLimit + 1) + voteTimeoutLowerLimit;
+        setMembers(members);
+    }
+    public Server(String name, int voteTimeout, ArrayList<String> members){
+        super(name);
+        this.id = name;
+        this.voteTimeout = voteTimeout;
+        setMembers(members);
+    }
+
+    private void setMembers(ArrayList<String> members){
+        this.members.addAll(members);
+        members.removeIf(member -> member.equals(this.id));
     }
 
     public AppendEntriesResult appendEntries(int term, int leaderId, int prevLogIndex, int prevLogTerm, ArrayList<LogEntry> entries, int leaderCommit) {
@@ -118,7 +133,8 @@ public class Server extends Node {
         serverType = ServerType.CANDIDATE;
         currentTerm++;
         votedFor = id;
-//        TODO: reset election timer
+//        reset election timer
+        lastElectionTime = System.nanoTime();
         Message msg = new Message();
         msg.addHeader("type", "requestVote");
         for (String member: members)
@@ -221,13 +237,18 @@ public class Server extends Node {
                         }
                     }
                 } catch (TimeoutException e){
-                    startElection();
                     future.cancel(true);
+                    if ((System.nanoTime() - lastElectionTime) / 1000  > voteTimeout)
+                        startElection();
                 } catch (ExecutionException | InterruptedException e) {
                     e.printStackTrace();
                 }
             }
         }
+    }
+
+    public ServerType getServerType() {
+        return serverType;
     }
 }
 
