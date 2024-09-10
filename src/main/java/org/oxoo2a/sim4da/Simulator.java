@@ -8,7 +8,8 @@ import java.util.concurrent.CountDownLatch;
 
 public class Simulator {
     private final String version = "sim4da V2.0";
-    private  Simulator () {
+
+    private Simulator() {
         System.setProperty("PID", String.valueOf(ProcessHandle.current().pid())); // Needed for logback
         logger = LoggerFactory.getLogger(sim4da.class);
         System.out.println(version);
@@ -26,7 +27,7 @@ public class Simulator {
         return instance;
     }
 
-    public void simulate ( long duration_in_seconds ) {
+    public void simulate(long duration_in_seconds) {
         simulating = true;
         startSignal.countDown();
         try {
@@ -37,7 +38,7 @@ public class Simulator {
         simulating = false;
     }
 
-    public void simulate () {
+    public void simulate() {
         simulating = true;
         startSignal.countDown();
         List<NetworkConnection> ncs = Network.getInstance().getAllNetworkConnections();
@@ -45,7 +46,8 @@ public class Simulator {
             nc.join();
         }
     }
-    public void shutdown () {
+
+    public void shutdown() {
         Network.getInstance().shutdown();
         logger.info(version + " - Simulation ended.");
     }
@@ -53,6 +55,7 @@ public class Simulator {
     public boolean isSimulating() {
         return simulating;
     }
+
     private static Simulator instance = null;
     private final Logger logger;
     private boolean simulating = false;
@@ -62,7 +65,7 @@ public class Simulator {
         if (simulating) return;
         try {
             startSignal.await();
+        } catch (InterruptedException e) {
         }
-        catch (InterruptedException e) {}
     }
 }

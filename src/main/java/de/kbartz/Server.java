@@ -57,7 +57,7 @@ public class Server extends Node {
 
     private void setCluster(ArrayList<String> cluster) {
         this.cluster.addAll(cluster);
-        cluster.removeIf(member -> member.equals(this.id));
+        this.cluster.removeIf(member -> member.equals(this.id));
     }
 
     public AppendEntriesResult appendEntries(int term, String leaderId, int prevLogIndex, int prevLogTerm, ArrayList<LogEntry> entries, int leaderCommit) {
@@ -305,6 +305,10 @@ public class Server extends Node {
 
     public ServerType getServerType() {
         return serverType;
+    }
+
+    public int getCurrentTerm() {
+        return currentTerm;
     }
 }
 
