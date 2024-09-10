@@ -28,7 +28,8 @@ public class Server extends Node {
     private int lastApplied = 0;
     private ServerType serverType = ServerType.FOLLOWER;
     private final int voteTimeout;
-    private long lastElectionTime = System.nanoTime();
+    private long lastElectionTime = System.currentTimeMillis();
+    private String leaderId;
 
     // volatile state on leaders, to be reinitialized after election
     private final HashMap<String, Integer> nextIndex = new HashMap<>();
@@ -53,7 +54,7 @@ public class Server extends Node {
         members.removeIf(member -> member.equals(this.id));
     }
 
-    public AppendEntriesResult appendEntries(int term, int leaderId, int prevLogIndex, int prevLogTerm, ArrayList<LogEntry> entries, int leaderCommit) {
+    public AppendEntriesResult appendEntries(int term, String leaderId, int prevLogIndex, int prevLogTerm, ArrayList<LogEntry> entries, int leaderCommit) {
         AppendEntriesResult result = new AppendEntriesResult();
         result.setTerm(currentTerm);
 //        If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
@@ -75,6 +76,8 @@ public class Server extends Node {
             result.setSuccess(false);
             return result;
         }
+//        from here on downwards the rpc is accepted
+        this.leaderId = leaderId;
 //        existing entry conflicts with new entry
         int i = 0;
         boolean conflict = false;
@@ -137,11 +140,15 @@ public class Server extends Node {
         lastElectionTime = System.nanoTime();
         Message msg = new Message();
         msg.addHeader("type", "requestVote");
+        msg.add("term", currentTerm);
+        msg.add("candidateId", id);
+        msg.add("lastLogIndex", log.size()-1);
+        msg.add("lastLogTerm", currentTerm);
         for (String member: members)
             sendBlindly(msg, member);
         Future<Boolean> future = CompletableFuture.supplyAsync(() -> {
             int votes = 0;
-            while (votes < members.size() / 2){
+            while (votes < Math.ceil(members.size() / 2.)){
                 Message m = receive();
                 if (!m.queryHeader("type").equals("requestVoteResponse"))continue;
                 if (Integer.parseInt(m.query("voteGranted")) == 1)
@@ -155,10 +162,11 @@ public class Server extends Node {
                 nextIndex.put(member, log.size());
                 matchIndex.put(member, 0);
             }
-            return false;
+            sendHeartbeats();
+            return true;
         });
         try {
-            future.get(voteTimeout, TimeUnit.MILLISECONDS);
+            boolean won = future.get(voteTimeout, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
 //            If election timeout elapses: start new election
             future.cancel(true);
@@ -211,7 +219,7 @@ public class Server extends Node {
                         }
                         case "appendEntries": {
                             int term = Integer.parseInt(m.query("term"));
-                            int leaderId = Integer.parseInt(m.query("leaderId"));
+                            String leaderId = m.query("leaderId");
                             int prevLogIndex = Integer.parseInt(m.query("prevLogIndex"));
                             int prevLogTerm = Integer.parseInt(m.query("prevLogTerm"));
                             int leaderCommit = Integer.parseInt(m.query("leaderCommit"));
@@ -238,7 +246,8 @@ public class Server extends Node {
                     }
                 } catch (TimeoutException e){
                     future.cancel(true);
-                    if ((System.nanoTime() - lastElectionTime) / 1000  > voteTimeout)
+                    long timePassed = System.currentTimeMillis() - lastElectionTime;
+                    if (timePassed  > voteTimeout)
                         startElection();
                 } catch (ExecutionException | InterruptedException e) {
                     e.printStackTrace();

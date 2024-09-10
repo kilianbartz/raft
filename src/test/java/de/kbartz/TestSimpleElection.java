@@ -14,8 +14,8 @@ public class TestSimpleElection {
         ArrayList<String> members = new ArrayList<>();
         members.add("fast");
         members.add("slow");
-        Server s1 = new Server("fast", 10, members);
-        Server s2 = new Server("slow", 30, members);
+        Server s1 = new Server("fast", 50, members);
+        Server s2 = new Server("slow", 150, members);
         Simulator sim = Simulator.getInstance();
         sim.simulate(1);
         sim.shutdown();
