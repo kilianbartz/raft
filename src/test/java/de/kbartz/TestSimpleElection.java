@@ -5,7 +5,7 @@ import org.oxoo2a.sim4da.Simulator;
 
 import java.util.ArrayList;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestSimpleElection {
 
@@ -14,8 +14,8 @@ public class TestSimpleElection {
         ArrayList<String> members = new ArrayList<>();
         members.add("fast");
         members.add("slow");
-        Server s1 = new Server("fast", 50, members);
-        Server s2 = new Server("slow", 150, members);
+        Server s1 = new Server("fast", 50, members, false);
+        Server s2 = new Server("slow", 150, members, false);
         Simulator sim = Simulator.getInstance();
         sim.simulate(1);
         sim.shutdown();
