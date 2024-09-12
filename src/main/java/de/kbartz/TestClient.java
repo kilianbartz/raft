@@ -12,6 +12,8 @@ public class TestClient extends Node {
     private final String recipient;
     private final List<LogEntry> log;
     ObjectMapper mapper = new ObjectMapper();
+    public int successes = 0;
+    public int failures = 0;
 
     public TestClient(String name, List<LogEntry> log, String recipient) {
         super(name);
@@ -27,6 +29,13 @@ public class TestClient extends Node {
             msg.addHeader("type", "clientPut");
             msg.add("entries", mapper.writeValueAsString(log));
             sendBlindly(msg, recipient);
+            while (true) {
+                Message m = receive();
+                if (m.query("success").equals("1"))
+                    successes++;
+                else
+                    failures++;
+            }
         } catch (InterruptedException | JsonProcessingException e) {
             throw new RuntimeException(e);
         }

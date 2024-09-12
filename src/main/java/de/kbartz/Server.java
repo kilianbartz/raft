@@ -44,6 +44,7 @@ public class Server extends Node {
     // volatile state on leaders, to be reinitialized after election
     private final HashMap<String, Integer> nextIndex = new HashMap<>();
     private final HashMap<String, Integer> matchIndex = new HashMap<>();
+    private final HashMap<String, Integer> clientIndices = new HashMap<>();
     private Thread heartbeatThread;
 
     public Server(String name, ArrayList<String> cluster) {
@@ -115,17 +116,8 @@ public class Server extends Node {
         }
         log.addAll(List.of(entries));
         if (leaderCommit > commitIndex) {
-            int oldCommit = commitIndex;
-            commitIndex = Math.min(leaderCommit, log.size() - 1);
-            commit(oldCommit, commitIndex);
-        }
-//        If commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine (§5.3)
-        if (commitIndex > lastApplied) {
-//            TODO: does it make sense to increment it only by 1?
-            lastApplied++;
-//            commit log[lastApplied] to state machine
-            LogEntry entry = log.get(lastApplied);
-            stateMachine.put(entry.getKey(), entry.getValue());
+            commit(commitIndex, leaderCommit);
+            commitIndex = leaderCommit;
         }
         result.setSuccess(true);
         result.setTerm(currentTerm);
@@ -293,13 +285,11 @@ public class Server extends Node {
                         int prevLogIndex = Integer.parseInt(msg.query("prevLogIndex"));
                         int prevLogTerm = Integer.parseInt(msg.query("prevLogTerm"));
                         int leaderCommit = Integer.parseInt(msg.query("leaderCommit"));
-                        String key = msg.query("key");
-                        String value = msg.query("value");
                         try {
                             LogEntry[] entries = mapper.readValue(msg.query("entries"), LogEntry[].class);
+                            AppendEntriesResult res = appendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
                             if (entries.length == 0)
                                 return;
-                            AppendEntriesResult res = appendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
                             Message response = new Message();
                             response.addHeader("type", "appendEntriesResponse");
                             response.add("term", res.getTerm());
@@ -328,6 +318,7 @@ public class Server extends Node {
                                 entry.setTerm(currentTerm);
                             }
                             log.addAll(entries);
+                            clientIndices.put(msg.queryHeader("sender"), log.size() - 1);
                             System.out.println("leader received " + entries.size() + " entries from " + msg.queryHeader("sender"));
                         } catch (JsonProcessingException e) {
                             throw new RuntimeException(e);
@@ -342,6 +333,7 @@ public class Server extends Node {
                         matchIndex.put(sender, _matchIndex);
                         nextIndex.put(sender, _matchIndex + 1);
                         System.out.println(sender + " append status: " + msg.query("success"));
+                        updateLeaderCommitIndex();
                         break;
                     }
                     default:
@@ -386,10 +378,43 @@ public class Server extends Node {
     }
 
     public void commit(int fromIndex, int toIndex) {
+        System.out.println(this.id + " commited from " + fromIndex + " to " + toIndex);
         for (int i = fromIndex; i <= toIndex; i++) {
             LogEntry e = log.get(i);
             stateMachine.put(e.getKey(), e.getValue());
         }
+    }
+
+    public boolean updateLeaderCommitIndex() {
+        for (int nextCommitIndex = log.size() - 1; nextCommitIndex > commitIndex; nextCommitIndex--) {
+            int counter = 1;
+            for (String member : cluster) {
+                if (matchIndex.get(member) >= nextCommitIndex) {
+                    counter++;
+                }
+            }
+            if (counter > Math.ceil((cluster.size() + 1) / 2.)) {
+                commit(commitIndex, nextCommitIndex);
+                commitIndex = nextCommitIndex;
+                System.out.println("leader: new commitIndex" + commitIndex);
+                ArrayList<String> safeToRemove = new ArrayList<>();
+                Message successMessage = new Message();
+                successMessage.addHeader("type", "clientPutResponse");
+                successMessage.add("success", 1);
+                for (Map.Entry<String, Integer> entry : clientIndices.entrySet()) {
+                    if (entry.getValue() >= commitIndex) {
+                        String client = entry.getKey();
+                        sendBlindly(successMessage, client);
+                        safeToRemove.add(client);
+                    }
+                }
+                for (String client : safeToRemove) {
+                    clientIndices.remove(client);
+                }
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -412,5 +437,13 @@ public class Server extends Node {
 
     public ArrayList<LogEntry> getLog() {
         return log;
+    }
+
+    public HashMap<String, String> getStateMachine() {
+        return stateMachine;
+    }
+
+    public int getCommitIndex() {
+        return commitIndex;
     }
 }

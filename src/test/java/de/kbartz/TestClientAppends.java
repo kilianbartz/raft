@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestClientAppends {
 
+//    TODO: test overwriting
+
     //    Achtung: die Tests laufen nur einzeln, nicht hintereinander durch. Das liegt wahrscheinlich an der simulator Instanz, die wiederverwendet wird
     @Test
     void testSimpleAppend() {
@@ -20,7 +22,7 @@ public class TestClientAppends {
         ArrayList<LogEntry> log = new ArrayList<>();
         log.add(new LogEntry("x", "1"));
         log.add(new LogEntry("y", "2"));
-        new TestClient("client", log, "fast");
+        TestClient client = new TestClient("client", log, "fast");
         Simulator sim = Simulator.getInstance();
         sim.simulate(1);
         sim.shutdown();
@@ -43,5 +45,12 @@ public class TestClientAppends {
         assertEquals(1, e.getTerm());
         assertEquals("y", e.getKey());
         assertEquals("2", e.getValue());
+        assertEquals(1, s1.getCommitIndex());
+        assertEquals(1, s3.getCommitIndex());
+        assertEquals("1", s1.getStateMachine().get("x"));
+        assertEquals("2", s1.getStateMachine().get("y"));
+        assertEquals("1", s3.getStateMachine().get("x"));
+        assertEquals("2", s3.getStateMachine().get("y"));
+        assertEquals(1, client.successes);
     }
 }
