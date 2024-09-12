@@ -288,7 +288,6 @@ public class Server extends Node {
                         break;
                     }
                     case "appendEntries": {
-                        System.out.println(this.id + " received append message: " + msg);
                         int term = Integer.parseInt(msg.query("term"));
                         String leaderId = msg.query("leaderId");
                         int prevLogIndex = Integer.parseInt(msg.query("prevLogIndex"));
@@ -305,6 +304,8 @@ public class Server extends Node {
                             response.addHeader("type", "appendEntriesResponse");
                             response.add("term", res.getTerm());
                             response.add("success", res.isSuccess() ? 1 : 0);
+                            if (res.isSuccess())
+                                response.add("matchIndex", log.size() - 1);
                             sendBlindly(response, msg.queryHeader("sender"));
                         } catch (JsonProcessingException e) {
                             throw new RuntimeException(e);
@@ -321,7 +322,11 @@ public class Server extends Node {
                     case "clientPut": {
                         try {
                             //noinspection unchecked
-                            List<LogEntry> entries = mapper.readValue(msg.query("entries"), List.class);
+                            List<LogEntry> entries = Arrays.asList(mapper.readValue(msg.query("entries"), LogEntry[].class));
+//                            set correct terms
+                            for (LogEntry entry : entries) {
+                                entry.setTerm(currentTerm);
+                            }
                             log.addAll(entries);
                             System.out.println("leader received " + entries.size() + " entries from " + msg.queryHeader("sender"));
                         } catch (JsonProcessingException e) {
@@ -330,8 +335,13 @@ public class Server extends Node {
                         break;
                     }
                     case "appendEntriesResponse": {
-                        System.out.println(msg.queryHeader("sender") + " responded with " + msg);
-                        
+                        String sender = msg.queryHeader("sender");
+                        if (!msg.query("success").equals("1"))
+                            return;
+                        int _matchIndex = Integer.parseInt(msg.query("matchIndex"));
+                        matchIndex.put(sender, _matchIndex);
+                        nextIndex.put(sender, _matchIndex + 1);
+                        System.out.println(sender + " append status: " + msg.query("success"));
                         break;
                     }
                     default:

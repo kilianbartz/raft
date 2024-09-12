@@ -2,7 +2,7 @@ package de.kbartz;
 
 public class LogEntry {
 
-    private final int term;
+    private int term;
     private final String key;
     private final String value;
 
@@ -12,8 +12,7 @@ public class LogEntry {
         value = null;
     }
 
-    public LogEntry(int term, String key, String value) {
-        this.term = term;
+    public LogEntry(String key, String value) {
         this.key = key;
         this.value = value;
     }
@@ -28,5 +27,9 @@ public class LogEntry {
 
     public String getValue() {
         return value;
+    }
+
+    public void setTerm(int term) {
+        this.term = term;
     }
 }
