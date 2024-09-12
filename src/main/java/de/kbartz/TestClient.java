@@ -14,11 +14,13 @@ public class TestClient extends Node {
     ObjectMapper mapper = new ObjectMapper();
     public int successes = 0;
     public int failures = 0;
+    private final String id;
 
-    public TestClient(String name, List<LogEntry> log, String recipient) {
-        super(name);
+    public TestClient(String id, List<LogEntry> log, String recipient) {
+        super(id);
         this.log = log;
         this.recipient = recipient;
+        this.id = id;
     }
 
     @Override
@@ -31,6 +33,7 @@ public class TestClient extends Node {
             sendBlindly(msg, recipient);
             while (true) {
                 Message m = receive();
+                System.out.println("Client " + this.id + " received " + m);
                 if (m.query("success").equals("1"))
                     successes++;
                 else

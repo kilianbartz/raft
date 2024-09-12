@@ -37,6 +37,7 @@ public class Server extends Node {
     private boolean inTestingMode = false;
     private LinkedList<Message> queue = new LinkedList<>();
     private final Object lock = new Object();
+    private final Object logLock = new Object();
 
     private int votesForMe = 0;
     private long lastMessageTime = System.currentTimeMillis();
@@ -44,7 +45,7 @@ public class Server extends Node {
     // volatile state on leaders, to be reinitialized after election
     private final HashMap<String, Integer> nextIndex = new HashMap<>();
     private final HashMap<String, Integer> matchIndex = new HashMap<>();
-    private final HashMap<String, Integer> clientIndices = new HashMap<>();
+    private final HashMap<String, Pair<Integer, Integer>> clientIndices = new HashMap<>();
     private Thread heartbeatThread;
 
     public Server(String name, ArrayList<String> cluster) {
@@ -311,14 +312,17 @@ public class Server extends Node {
                 switch (msg.queryHeader("type")) {
                     case "clientPut": {
                         try {
-                            //noinspection unchecked
                             List<LogEntry> entries = Arrays.asList(mapper.readValue(msg.query("entries"), LogEntry[].class));
 //                            set correct terms
                             for (LogEntry entry : entries) {
                                 entry.setTerm(currentTerm);
                             }
-                            log.addAll(entries);
-                            clientIndices.put(msg.queryHeader("sender"), log.size() - 1);
+                            synchronized (logLock) {
+                                int startIndex = log.size();
+                                int endIndex = startIndex + entries.size() - 1;
+                                log.addAll(entries);
+                                clientIndices.put(msg.queryHeader("sender"), new Pair<>(startIndex, endIndex));
+                            }
                             System.out.println("leader received " + entries.size() + " entries from " + msg.queryHeader("sender"));
                         } catch (JsonProcessingException e) {
                             throw new RuntimeException(e);
@@ -397,15 +401,27 @@ public class Server extends Node {
                 commit(commitIndex, nextCommitIndex);
                 commitIndex = nextCommitIndex;
                 System.out.println("leader: new commitIndex" + commitIndex);
+//                responses to clients
+//                TODO: no synchronization needed?
                 ArrayList<String> safeToRemove = new ArrayList<>();
                 Message successMessage = new Message();
                 successMessage.addHeader("type", "clientPutResponse");
                 successMessage.add("success", 1);
-                for (Map.Entry<String, Integer> entry : clientIndices.entrySet()) {
-                    if (entry.getValue() >= commitIndex) {
-                        String client = entry.getKey();
-                        sendBlindly(successMessage, client);
-                        safeToRemove.add(client);
+                for (Map.Entry<String, Pair<Integer, Integer>> entry : clientIndices.entrySet()) {
+                    Pair<Integer, Integer> indices = entry.getValue();
+                    if (indices.first <= commitIndex) {
+                        try {
+                            int endIndex = Math.min(commitIndex, indices.second);
+                            String client = entry.getKey();
+                            successMessage.add("entries", mapper.writeValueAsString(log.subList(indices.first, endIndex)));
+                            sendBlindly(successMessage, client);
+                            if (endIndex == indices.second) {
+                                safeToRemove.add(client);
+                            }
+//                            else: only partially commited, another message will be sent when commited fully
+                        } catch (JsonProcessingException e) {
+                            throw new RuntimeException(e);
+                        }
                     }
                 }
                 for (String client : safeToRemove) {
