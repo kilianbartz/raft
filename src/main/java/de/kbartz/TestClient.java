@@ -1,5 +1,7 @@
 package de.kbartz;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.oxoo2a.sim4da.Message;
 import org.oxoo2a.sim4da.Node;
 
@@ -9,6 +11,7 @@ public class TestClient extends Node {
 
     private final String recipient;
     private final List<LogEntry> log;
+    ObjectMapper mapper = new ObjectMapper();
 
     public TestClient(String name, List<LogEntry> log, String recipient) {
         super(name);
@@ -21,13 +24,10 @@ public class TestClient extends Node {
         try {
             Thread.sleep(500);
             Message msg = new Message();
-            msg.addHeader("type", "clientAppend");
-            for (LogEntry entry : log) {
-                msg.add("key", entry.getKey());
-                msg.add("value", entry.getValue());
-                sendBlindly(msg, recipient);
-            }
-        } catch (InterruptedException e) {
+            msg.addHeader("type", "clientPut");
+            msg.add("entries", mapper.writeValueAsString(log));
+            sendBlindly(msg, recipient);
+        } catch (InterruptedException | JsonProcessingException e) {
             throw new RuntimeException(e);
         }
     }

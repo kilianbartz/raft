@@ -2,36 +2,31 @@ package de.kbartz;
 
 public class LogEntry {
 
-    private int term;
-    private String key;
-    private String value;
+    private final int term;
+    private final String key;
+    private final String value;
+
+    public LogEntry() {
+        term = -1;
+        key = null;
+        value = null;
+    }
 
     public LogEntry(int term, String key, String value) {
         this.term = term;
         this.key = key;
+        this.value = value;
     }
 
     public int getTerm() {
         return term;
     }
 
-    public void setTerm(int term) {
-        this.term = term;
-    }
-
     public String getKey() {
         return key;
     }
 
-    public void setKey(String key) {
-        this.key = key;
-    }
-
     public String getValue() {
         return value;
-    }
-
-    public void setValue(String value) {
-        this.value = value;
     }
 }

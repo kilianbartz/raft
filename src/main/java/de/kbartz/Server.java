@@ -7,7 +7,7 @@ import org.oxoo2a.sim4da.Node;
 
 import java.util.*;
 
-@SuppressWarnings({"BusyWait", "InfiniteLoopStatement"})
+@SuppressWarnings({"BusyWait", "InfiniteLoopStatement", "unchecked"})
 public class Server extends Node {
 
 //    TODO: maybe use Virtual Threads https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html#GUID-A0E4C745-6BC3-4DAE-87ED-E4A094D20A38
@@ -68,7 +68,8 @@ public class Server extends Node {
         this.cluster.removeIf(member -> member.equals(this.id));
     }
 
-    public AppendEntriesResult appendEntries(int term, String leaderId, int prevLogIndex, int prevLogTerm, List<LogEntry> entries, int leaderCommit) {
+    public AppendEntriesResult appendEntries(int term, String leaderId, int prevLogIndex, int prevLogTerm, LogEntry[] entries, int leaderCommit) {
+        System.out.println(this.id + " is trying to append " + entries.length + " entries...");
         AppendEntriesResult result = new AppendEntriesResult();
         result.setTerm(currentTerm);
 //        If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
@@ -90,7 +91,7 @@ public class Server extends Node {
             return result;
         }
 //        log does not contain entry at prevLogIndex whose term matches prevLogTerm
-        if (log.size() <= prevLogIndex || log.get(prevLogIndex).getTerm() != prevLogTerm) {
+        if (prevLogIndex >= 0 && (log.size() <= prevLogIndex || log.get(prevLogIndex).getTerm() != prevLogTerm)) {
             result.setSuccess(false);
             return result;
         }
@@ -99,8 +100,8 @@ public class Server extends Node {
 //        existing entry conflicts with new entry
         int i = 0;
         boolean conflict = false;
-        for (; i < entries.size(); i++) {
-            LogEntry entry = entries.get(i);
+        for (; i < entries.length; i++) {
+            LogEntry entry = entries[i];
             if (entry.getTerm() != term) {
                 conflict = true;
                 break;
@@ -112,7 +113,7 @@ public class Server extends Node {
                 log.subList(logIndex, log.size()).clear();
             }
         }
-        log.addAll(entries);
+        log.addAll(List.of(entries));
         if (leaderCommit > commitIndex) {
             int oldCommit = commitIndex;
             commitIndex = Math.min(leaderCommit, log.size() - 1);
@@ -181,6 +182,7 @@ public class Server extends Node {
         hb.add("term", currentTerm);
         hb.add("leaderId", id);
         hb.add("leaderCommit", commitIndex);
+        hb.add("entries", "[]");
         for (String member : cluster) {
             int prevLogIndex = nextIndex.get(member) - 1;
             int prevLogTerm = 0;
@@ -192,6 +194,7 @@ public class Server extends Node {
             if (nextIndex.get(member) < log.size()) {
 //                member is missing entries
                 List<LogEntry> toSend = log.subList(nextIndex.get(member), log.size());
+                System.out.println(member + " is behind by: " + toSend.size());
                 try {
                     String entries = mapper.writeValueAsString(toSend);
                     hb.add("entries", entries);
@@ -285,6 +288,7 @@ public class Server extends Node {
                         break;
                     }
                     case "appendEntries": {
+                        System.out.println(this.id + " received append message: " + msg);
                         int term = Integer.parseInt(msg.query("term"));
                         String leaderId = msg.query("leaderId");
                         int prevLogIndex = Integer.parseInt(msg.query("prevLogIndex"));
@@ -292,18 +296,19 @@ public class Server extends Node {
                         int leaderCommit = Integer.parseInt(msg.query("leaderCommit"));
                         String key = msg.query("key");
                         String value = msg.query("value");
-                        if (key == null || value == null) {
-                            return;
+                        try {
+                            LogEntry[] entries = mapper.readValue(msg.query("entries"), LogEntry[].class);
+                            if (entries.length == 0)
+                                return;
+                            AppendEntriesResult res = appendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
+                            Message response = new Message();
+                            response.addHeader("type", "appendEntriesResponse");
+                            response.add("term", res.getTerm());
+                            response.add("success", res.isSuccess() ? 1 : 0);
+                            sendBlindly(response, msg.queryHeader("sender"));
+                        } catch (JsonProcessingException e) {
+                            throw new RuntimeException(e);
                         }
-                        LogEntry entry = new LogEntry(term, key, value);
-                        ArrayList<LogEntry> entries = new ArrayList<>();
-                        entries.add(entry);
-                        AppendEntriesResult res = appendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
-                        Message response = new Message();
-                        response.addHeader("type", "appendEntriesResponse");
-                        response.add("term", res.getTerm());
-                        response.add("success", res.isSuccess() ? 1 : 0);
-                        sendBlindly(response, msg.queryHeader("sender"));
                         break;
                     }
                     default:
@@ -312,6 +317,26 @@ public class Server extends Node {
                 break;
             }
             case LEADER: {
+                switch (msg.queryHeader("type")) {
+                    case "clientPut": {
+                        try {
+                            //noinspection unchecked
+                            List<LogEntry> entries = mapper.readValue(msg.query("entries"), List.class);
+                            log.addAll(entries);
+                            System.out.println("leader received " + entries.size() + " entries from " + msg.queryHeader("sender"));
+                        } catch (JsonProcessingException e) {
+                            throw new RuntimeException(e);
+                        }
+                        break;
+                    }
+                    case "appendEntriesResponse": {
+                        System.out.println(msg.queryHeader("sender") + " responded with " + msg);
+                        
+                        break;
+                    }
+                    default:
+                        return;
+                }
                 break;
             }
         }
