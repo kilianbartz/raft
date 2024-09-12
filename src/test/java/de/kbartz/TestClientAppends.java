@@ -17,8 +17,8 @@ public class TestClientAppends {
         ArrayList<String> members = new ArrayList<>();
         members.add("fast");
         members.add("slow");
-        Server s1 = new Server("fast", 50, members, false);
-        Server s3 = new Server("slow", 150, members, false);
+        Server s1 = new Server("fast", 50, members);
+        Server s3 = new Server("slow", 150, members);
         ArrayList<LogEntry> log = new ArrayList<>();
         log.add(new LogEntry("x", "1"));
         log.add(new LogEntry("y", "2"));

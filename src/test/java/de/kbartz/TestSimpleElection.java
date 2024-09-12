@@ -15,8 +15,8 @@ public class TestSimpleElection {
         ArrayList<String> members = new ArrayList<>();
         members.add("fast");
         members.add("slow");
-        Server s1 = new Server("fast", 50, members, false);
-        Server s3 = new Server("slow", 150, members, false);
+        Server s1 = new Server("fast", 50, members);
+        Server s3 = new Server("slow", 150, members);
         Simulator sim = Simulator.getInstance();
         sim.simulate(1);
         sim.shutdown();
@@ -31,10 +31,10 @@ public class TestSimpleElection {
         cluster.add("fast2");
         cluster.add("slow");
         cluster.add("slow2");
-        Server s1 = new Server("fast", 49, cluster, false);
-        Server s2 = new Server("fast2", 50, cluster, false);
-        Server s3 = new Server("slow", 150, cluster, false);
-        Server s4 = new Server("slow2", 150, cluster, false);
+        Server s1 = new Server("fast", 49, cluster);
+        Server s2 = new Server("fast2", 50, cluster);
+        Server s3 = new Server("slow", 150, cluster);
+        Server s4 = new Server("slow2", 150, cluster);
         Simulator sim = Simulator.getInstance();
         sim.simulate(1);
         sim.shutdown();

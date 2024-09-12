@@ -7,7 +7,7 @@ import org.oxoo2a.sim4da.Node;
 
 import java.util.*;
 
-@SuppressWarnings({"BusyWait", "InfiniteLoopStatement", "unchecked"})
+@SuppressWarnings({"BusyWait", "InfiniteLoopStatement"})
 public class Server extends Node {
 
 //    TODO: maybe use Virtual Threads https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html#GUID-A0E4C745-6BC3-4DAE-87ED-E4A094D20A38
@@ -34,7 +34,6 @@ public class Server extends Node {
     private ServerType serverType = ServerType.FOLLOWER;
     private int voteTimeout = 0;
     private String leaderId;
-    private boolean inTestingMode = false;
     private LinkedList<Message> queue = new LinkedList<>();
     private final Object lock = new Object();
     private final Object logLock = new Object();
@@ -57,12 +56,11 @@ public class Server extends Node {
     }
 
     //    for testing purposes
-    public Server(String name, int voteTimeout, ArrayList<String> cluster, boolean testMode) {
+    public Server(String name, int voteTimeout, ArrayList<String> cluster) {
         super(name);
         this.id = name;
         this.voteTimeout = voteTimeout;
         setCluster(cluster);
-        this.inTestingMode = testMode;
     }
 
     private void setCluster(ArrayList<String> cluster) {
