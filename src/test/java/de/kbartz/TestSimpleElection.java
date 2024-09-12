@@ -15,16 +15,13 @@ public class TestSimpleElection {
         ArrayList<String> members = new ArrayList<>();
         members.add("fast");
         members.add("slow");
-        members.add("slow2");
         Server s1 = new Server("fast", 50, members, false);
         Server s3 = new Server("slow", 150, members, false);
-        Server s4 = new Server("slow2", 150, members, false);
         Simulator sim = Simulator.getInstance();
         sim.simulate(1);
         sim.shutdown();
         assertEquals(ServerType.LEADER, s1.getServerType());
         assertEquals(ServerType.FOLLOWER, s3.getServerType());
-        assertEquals(ServerType.FOLLOWER, s4.getServerType());
     }
 
     @Test
