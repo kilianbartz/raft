@@ -154,13 +154,13 @@ public class Server extends Node {
     }
 
     public void election() {
-        System.out.println("started election in term " + currentTerm + " (" + System.currentTimeMillis() + ")");
         serverType = ServerType.CANDIDATE;
         if (heartbeatThread != null) {
             heartbeatThread.interrupt();
             heartbeatThread = null;
         }
         currentTerm++;
+        System.out.println(this.id + " started election in term " + currentTerm + " (" + System.currentTimeMillis() + ")");
         votedFor = id;
         synchronized (lock) {
             votesForMe = 1;
@@ -214,31 +214,26 @@ public class Server extends Node {
         }
     };
 
+    private void wonElection() {
+        System.out.println(this.id + " won the election with " + this.votesForMe + " votes.");
+        serverType = ServerType.LEADER;
+        heartbeatThread = new Thread(heartbeatRunnable);
+        heartbeatThread.start();
+        for (String member : cluster) {
+            nextIndex.put(member, log.size());
+            matchIndex.put(member, 0);
+        }
+    }
+
     private final Runnable electionTimeout = () -> {
         while (true) {
             try {
                 Thread.sleep(this.voteTimeout);
-                if (serverType == ServerType.CANDIDATE) {
-                    boolean wonElection;
-                    synchronized (lock) {
-                        wonElection = votesForMe >= Math.ceil(cluster.size() + 1 / 2.);
-                        System.out.println(this.id + " has " + this.votesForMe + " votes.");
-                    }
-                    if (wonElection) {
-                        serverType = ServerType.LEADER;
-                        heartbeatThread = new Thread(heartbeatRunnable);
-                        heartbeatThread.start();
-                        for (String member : cluster) {
-                            nextIndex.put(member, log.size());
-                            matchIndex.put(member, 0);
-                        }
-                        continue;
-                    }
-                } else if (serverType == ServerType.FOLLOWER) {
-                    synchronized (lock) {
-                        if (System.currentTimeMillis() - lastMessageTime > voteTimeout)
-                            election();
-                    }
+                if (serverType == ServerType.LEADER)
+                    continue;
+                synchronized (lock) {
+                    if (System.currentTimeMillis() - lastMessageTime > voteTimeout)
+                        election();
                 }
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
@@ -251,18 +246,23 @@ public class Server extends Node {
             case CANDIDATE: {
                 switch (msg.queryHeader("type")) {
                     case "appendEntries": {
-                        int term = Integer.parseInt(msg.queryHeader("term"));
+                        int term = Integer.parseInt(msg.query("term"));
 //                    While waiting for votes, a candidate may receive an AppendEntries RPC from another server claiming to be leader. If the leader’s term (included in its RPC) is at least as large as the candidate’s current term, then the candidate recognizes the leader as legitimate and returns to follower state
-                        if (term >= currentTerm) serverType = ServerType.FOLLOWER;
+                        if (term >= currentTerm) {
+                            serverType = ServerType.FOLLOWER;
+                            System.out.println("Another server was quicker, reverting to follower state");
+                        }
                         break;
                     }
                     case "requestVoteResponse": {
                         int term = Integer.parseInt(msg.query("term"));
                         boolean voteGranted = msg.query("voteGranted").equals("1");
-                        System.out.println(this.id + " received reponse for term " + term + ": " + voteGranted + " (" + System.currentTimeMillis() + ")");
+                        System.out.println(this.id + " received reponse from " + msg.queryHeader("sender") + " for term " + term + ": " + voteGranted + " (" + System.currentTimeMillis() + ")");
                         if (voteGranted) {
                             votesForMe++;
                         }
+                        if (votesForMe > Math.ceil((cluster.size() + 1) / 2.))
+                            wonElection();
                     }
                     default:
                         return;

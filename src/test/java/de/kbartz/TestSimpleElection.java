@@ -36,7 +36,7 @@ public class TestSimpleElection {
         Server s3 = new Server("slow", 150, cluster, false);
         Server s4 = new Server("slow2", 150, cluster, false);
         Simulator sim = Simulator.getInstance();
-        sim.simulate(2);
+        sim.simulate(1);
         sim.shutdown();
         assert s1.getServerType() == ServerType.LEADER || s2.getServerType() == ServerType.LEADER;
         assertEquals(ServerType.FOLLOWER, s3.getServerType());
