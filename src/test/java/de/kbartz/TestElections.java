@@ -7,7 +7,7 @@ import java.util.ArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class TestSimpleElection {
+public class TestElections {
 
     //    Achtung: die Tests laufen nur einzeln, nicht hintereinander durch. Das liegt wahrscheinlich an der simulator Instanz, die wiederverwendet wird
     @Test
@@ -41,5 +41,21 @@ public class TestSimpleElection {
         assert s1.getServerType() == ServerType.LEADER || s2.getServerType() == ServerType.LEADER;
         assertEquals(ServerType.FOLLOWER, s3.getServerType());
         assertEquals(ServerType.FOLLOWER, s4.getServerType());
+    }
+
+    @Test
+    void testVoteRejection() {
+        ArrayList<String> members = new ArrayList<>();
+        members.add("fast");
+        members.add("slow");
+        Server s1 = new Server("fast", 50, members);
+        Server s3 = new Server("slow", 150, members);
+        LogEntry e = new LogEntry(1, "x", "1");
+        s3.getLog().add(e);
+        Simulator sim = Simulator.getInstance();
+        sim.simulate(1);
+        sim.shutdown();
+        assertEquals(ServerType.FOLLOWER, s1.getServerType());
+        assertEquals(ServerType.LEADER, s3.getServerType());
     }
 }

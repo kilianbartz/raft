@@ -39,7 +39,7 @@ public class Server extends Node {
     private final Object logLock = new Object();
 
     private int votesForMe = 0;
-    private long lastMessageTime = System.currentTimeMillis();
+    private long lastRelevantTime = System.currentTimeMillis(); //only set when receiving valid appendEntries / granting vote
 
     // volatile state on leaders, to be reinitialized after election
     private final HashMap<String, Integer> nextIndex = new HashMap<>();
@@ -69,33 +69,20 @@ public class Server extends Node {
     }
 
     public AppendEntriesResult appendEntries(int term, String leaderId, int prevLogIndex, int prevLogTerm, LogEntry[] entries, int leaderCommit) {
-        System.out.println(this.id + " is trying to append " + entries.length + " entries...");
         AppendEntriesResult result = new AppendEntriesResult();
         result.setTerm(currentTerm);
-//        If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-        if (term > currentTerm) {
-            currentTerm = term;
-            serverType = ServerType.FOLLOWER;
-            if (heartbeatThread != null) {
-                heartbeatThread.interrupt();
-                heartbeatThread = null;
-            }
-        }
-        //        only followers respond to rpcs
-        if (serverType != ServerType.FOLLOWER) {
-            result.setSuccess(false);
-            return result;
-        }
         if (term < currentTerm) {
+            System.out.println(this.id + " rejected appendEntries cause of term");
             result.setSuccess(false);
             return result;
         }
-//        log does not contain entry at prevLogIndex whose term matches prevLogTerm
+//        log does not match leader's log: does not contain entry at prevLogIndex whose term matches prevLogTerm;
         if (prevLogIndex >= 0 && (log.size() <= prevLogIndex || log.get(prevLogIndex).getTerm() != prevLogTerm)) {
             result.setSuccess(false);
             return result;
         }
 //        from here on downwards the rpc is accepted
+        lastRelevantTime = System.currentTimeMillis();
         this.leaderId = leaderId;
 //        existing entry conflicts with new entry
         int i = 0;
@@ -126,15 +113,18 @@ public class Server extends Node {
     public RequestVoteResult requestVote(int term, String candidateId, int lastLogIndex, int lastLogTerm) {
         RequestVoteResult result = new RequestVoteResult();
         result.setTerm(currentTerm);
-        //        only followers respond to rpcs
-        if (serverType != ServerType.FOLLOWER) {
-            result.setVoteGranted(false);
-            return result;
-        }
         if (term < currentTerm) {
+            System.out.println(this.id + " rejects because of term too small");
             result.setVoteGranted(false);
             return result;
         }
+// additional election restrictions (5.4.1) to ensure that the candidate has all previously commited entries
+        if ((!log.isEmpty() && log.getLast().getTerm() > lastLogTerm) || log.size() - 1 > lastLogIndex) {
+            System.out.println(this.id + " rejects because of log not up to date");
+            result.setVoteGranted(false);
+            return result;
+        }
+        lastRelevantTime = System.currentTimeMillis();
         if (votedFor == null || votedFor.equals(candidateId)) {
             result.setVoteGranted(true);
             votedFor = candidateId;
@@ -162,44 +152,45 @@ public class Server extends Node {
         msg.add("term", currentTerm);
         msg.add("candidateId", id);
         msg.add("lastLogIndex", log.size() - 1);
-        msg.add("lastLogTerm", currentTerm);
+        msg.add("lastLogTerm", log.isEmpty() ? currentTerm : log.getLast().getTerm());
         for (String member : cluster)
             sendBlindly(msg, member);
     }
 
-    public void leaderSendHeartbeats() {
+    public void sendHeartBeat(String member) {
         Message hb = new Message();
         hb.addHeader("type", "appendEntries");
         hb.add("term", currentTerm);
         hb.add("leaderId", id);
         hb.add("leaderCommit", commitIndex);
         hb.add("entries", "[]");
-        for (String member : cluster) {
-            int prevLogIndex = nextIndex.get(member) - 1;
-            int prevLogTerm = 0;
-            if (prevLogIndex >= 0) {
-                prevLogTerm = log.get(prevLogIndex).getTerm();
-            }
-            hb.add("prevLogIndex", prevLogIndex);
-            hb.add("prevLogTerm", prevLogTerm);
-            if (nextIndex.get(member) < log.size()) {
-//                member is missing entries
-                List<LogEntry> toSend = log.subList(nextIndex.get(member), log.size());
-                System.out.println(member + " is behind by: " + toSend.size());
-                try {
-                    String entries = mapper.writeValueAsString(toSend);
-                    hb.add("entries", entries);
-                } catch (JsonProcessingException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-            sendBlindly(hb, member);
+        int prevLogIndex = nextIndex.get(member) - 1;
+        int prevLogTerm = 0;
+        if (prevLogIndex >= 0) {
+            prevLogTerm = log.get(prevLogIndex).getTerm();
         }
+        hb.add("prevLogIndex", prevLogIndex);
+        hb.add("prevLogTerm", prevLogTerm);
+        if (nextIndex.get(member) < log.size()) {
+//                member is missing entries
+            List<LogEntry> toSend = log.subList(nextIndex.get(member), log.size());
+            System.out.println(member + " is behind by: " + toSend.size());
+            try {
+                String entries = mapper.writeValueAsString(toSend);
+                hb.add("entries", entries);
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        sendBlindly(hb, member);
     }
 
     private final Runnable heartbeatRunnable = () -> {
         while (!Thread.interrupted()) {
-            leaderSendHeartbeats();
+            System.out.println("Sending heartbeats at " + System.currentTimeMillis());
+            for (String member : cluster) {
+                sendHeartBeat(member);
+            }
             try {
                 Thread.sleep(heartbeatInterval);
             } catch (InterruptedException e) {
@@ -226,7 +217,7 @@ public class Server extends Node {
                 if (serverType == ServerType.LEADER)
                     continue;
                 synchronized (lock) {
-                    if (System.currentTimeMillis() - lastMessageTime > voteTimeout)
+                    if (System.currentTimeMillis() - lastRelevantTime > voteTimeout)
                         election();
                 }
             } catch (InterruptedException e) {
@@ -244,8 +235,6 @@ public class Server extends Node {
         try {
             LogEntry[] entries = mapper.readValue(msg.query("entries"), LogEntry[].class);
             AppendEntriesResult res = appendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
-            if (entries.length == 0)
-                return;
             Message response = new Message();
             response.addHeader("type", "appendEntriesResponse");
             response.add("term", res.getTerm());
@@ -258,12 +247,29 @@ public class Server extends Node {
         }
     }
 
+    private void becomeFollower() {
+        serverType = ServerType.FOLLOWER;
+        if (heartbeatThread != null) {
+            heartbeatThread.interrupt();
+            heartbeatThread = null;
+        }
+    }
+
     private void processMessage(Message msg) {
+        System.out.println(msg);
+        int term = Integer.parseInt(Objects.requireNonNullElse(msg.query("term"), "0"));
+        //        If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
+        if (term > currentTerm) {
+            System.out.println(this.id + " updated term and becomes follower");
+            currentTerm = term;
+//            not voted for anyone in new term
+            votedFor = null;
+            becomeFollower();
+        }
         switch (serverType) {
             case CANDIDATE: {
                 switch (msg.queryHeader("type")) {
                     case "appendEntries": {
-                        int term = Integer.parseInt(msg.query("term"));
 //                    While waiting for votes, a candidate may receive an AppendEntries RPC from another server claiming to be leader. If the leader’s term (included in its RPC) is at least as large as the candidate’s current term, then the candidate recognizes the leader as legitimate and returns to follower state
                         if (term >= currentTerm) {
                             serverType = ServerType.FOLLOWER;
@@ -273,7 +279,6 @@ public class Server extends Node {
                         break;
                     }
                     case "requestVoteResponse": {
-                        int term = Integer.parseInt(msg.query("term"));
                         boolean voteGranted = msg.query("voteGranted").equals("1");
                         System.out.println(this.id + " received reponse from " + msg.queryHeader("sender") + " for term " + term + ": " + voteGranted + " (" + System.currentTimeMillis() + ")");
                         if (voteGranted) {
@@ -290,7 +295,6 @@ public class Server extends Node {
             case FOLLOWER: {
                 switch (msg.queryHeader("type")) {
                     case "requestVote": {
-                        int term = Integer.parseInt(msg.query("term"));
                         String candidateId = msg.query("candidateId");
                         int lastLogIndex = Integer.parseInt(msg.query("lastLogIndex"));
                         int lastLogTerm = Integer.parseInt(msg.query("lastLogTerm"));
@@ -334,12 +338,17 @@ public class Server extends Node {
                     }
                     case "appendEntriesResponse": {
                         String sender = msg.queryHeader("sender");
-                        if (!msg.query("success").equals("1"))
+                        if (!msg.query("success").equals("1")) {
+//                            If AppendEntry fails: decrement nextIndex and retry
+                            System.out.println("appendEntriesResponse failed. Retrying");
+                            nextIndex.put(sender, nextIndex.get(sender) - 1);
+                            sendHeartBeat(sender);
                             return;
+                        }
+//                        successful
                         int _matchIndex = Integer.parseInt(msg.query("matchIndex"));
                         matchIndex.put(sender, _matchIndex);
                         nextIndex.put(sender, _matchIndex + 1);
-                        System.out.println(sender + " append status: " + msg.query("success"));
                         updateLeaderCommitIndex();
                         break;
                     }
@@ -444,7 +453,6 @@ public class Server extends Node {
             Message m = receive();
             synchronized (lock) {
                 queue.offer(m);
-                lastMessageTime = System.currentTimeMillis();
                 lock.notify();
             }
         }
