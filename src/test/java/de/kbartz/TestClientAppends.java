@@ -53,4 +53,22 @@ public class TestClientAppends {
         assertEquals("2", s3.getStateMachine().get("y"));
         assertEquals(1, client.successes);
     }
+
+    @Test
+    void testOverwritingFollowerLog() {
+        ArrayList<String> members = new ArrayList<>();
+        members.add("fast");
+        members.add("slow");
+        Server s1 = new Server("fast", 50, members);
+        Server s3 = new Server("slow", 150, members);
+        Simulator sim = Simulator.getInstance();
+        LogEntry e = new LogEntry(1, "x", "1");
+        s1.getLog().add(e);
+        s3.getLog().add(new LogEntry(0, "y", "2"));
+        sim.simulate(1);
+        sim.shutdown();
+        assertEquals(ServerType.LEADER, s1.getServerType());
+        assertEquals(ServerType.FOLLOWER, s3.getServerType());
+        assertEquals(s1.getLog().getFirst(), s3.getLog().getFirst());
+    }
 }

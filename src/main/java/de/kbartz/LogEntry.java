@@ -8,8 +8,8 @@ public class LogEntry {
 
     public LogEntry() {
         term = -1;
-        key = null;
-        value = null;
+        key = "";
+        value = "";
     }
 
     public LogEntry(String key, String value) {
@@ -37,5 +37,15 @@ public class LogEntry {
 
     public void setTerm(int term) {
         this.term = term;
+    }
+
+    public String toString() {
+        return "Term: " + term + ", Key: " + key + ", Value: " + value;
+    }
+
+    @Override
+    public boolean equals(Object logEntry) {
+        if (!(logEntry instanceof LogEntry other)) return false;
+        return other.term == term && other.key.equals(key) && other.value.equals(value);
     }
 }

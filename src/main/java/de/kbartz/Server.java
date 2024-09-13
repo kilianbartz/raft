@@ -72,33 +72,23 @@ public class Server extends Node {
         AppendEntriesResult result = new AppendEntriesResult();
         result.setTerm(currentTerm);
         if (term < currentTerm) {
-            System.out.println(this.id + " rejected appendEntries cause of term");
+            System.out.println(this.id + " rejected appendEntries because of term");
             result.setSuccess(false);
             return result;
         }
 //        log does not match leader's log: does not contain entry at prevLogIndex whose term matches prevLogTerm;
         if (prevLogIndex >= 0 && (log.size() <= prevLogIndex || log.get(prevLogIndex).getTerm() != prevLogTerm)) {
+            System.out.println(this.id + " rejected appendEntries because of inconsistent log");
             result.setSuccess(false);
             return result;
         }
 //        from here on downwards the rpc is accepted
+        int insertIndex = prevLogIndex + 1;
         lastRelevantTime = System.currentTimeMillis();
         this.leaderId = leaderId;
-//        existing entry conflicts with new entry
-        int i = 0;
-        boolean conflict = false;
-        for (; i < entries.length; i++) {
-            LogEntry entry = entries[i];
-            if (entry.getTerm() != term) {
-                conflict = true;
-                break;
-            }
-        }
-        if (conflict) {
-            int logIndex = prevLogIndex + 1 + i;
-            if (log.size() > logIndex) {
-                log.subList(logIndex, log.size()).clear();
-            }
+//        own log might be too long (duplicate entries etc.). This also covers conflicting entries
+        if (log.size() - 1 > prevLogIndex) {
+            log.subList(insertIndex, log.size()).clear();
         }
         log.addAll(List.of(entries));
         if (leaderCommit > commitIndex) {
@@ -187,7 +177,6 @@ public class Server extends Node {
 
     private final Runnable heartbeatRunnable = () -> {
         while (!Thread.interrupted()) {
-            System.out.println("Sending heartbeats at " + System.currentTimeMillis());
             for (String member : cluster) {
                 sendHeartBeat(member);
             }
@@ -256,11 +245,9 @@ public class Server extends Node {
     }
 
     private void processMessage(Message msg) {
-        System.out.println(msg);
         int term = Integer.parseInt(Objects.requireNonNullElse(msg.query("term"), "0"));
         //        If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
         if (term > currentTerm) {
-            System.out.println(this.id + " updated term and becomes follower");
             currentTerm = term;
 //            not voted for anyone in new term
             votedFor = null;
@@ -341,12 +328,13 @@ public class Server extends Node {
                         if (!msg.query("success").equals("1")) {
 //                            If AppendEntry fails: decrement nextIndex and retry
                             System.out.println("appendEntriesResponse failed. Retrying");
-                            nextIndex.put(sender, nextIndex.get(sender) - 1);
+//                            avoid out of bounds
+                            nextIndex.put(sender, Math.max(nextIndex.get(sender) - 1, 0));
                             sendHeartBeat(sender);
                             return;
                         }
 //                        successful
-                        int _matchIndex = Integer.parseInt(msg.query("matchIndex"));
+                        int _matchIndex = Math.min(Integer.parseInt(msg.query("matchIndex")), log.size() - 1);
                         matchIndex.put(sender, _matchIndex);
                         nextIndex.put(sender, _matchIndex + 1);
                         updateLeaderCommitIndex();
