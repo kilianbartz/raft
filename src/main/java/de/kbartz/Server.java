@@ -297,6 +297,14 @@ public class Server extends Node {
                         processAppendEntries(msg);
                         break;
                     }
+                    case "clientPut": {
+//                        relay to leader
+                        Message response = new Message();
+                        response.addHeader("type", "clientPutResponse");
+                        response.add("success", 0);
+                        response.add("leaderId", leaderId);
+                        sendBlindly(response, msg.queryHeader("sender"));
+                    }
                     default:
                         return;
                 }

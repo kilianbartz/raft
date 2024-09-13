@@ -36,8 +36,11 @@ public class TestClient extends Node {
                 System.out.println("Client " + this.id + " received " + m);
                 if (m.query("success").equals("1"))
                     successes++;
-                else
+                else {
+                    String leaderId = m.query("leaderId");
+                    sendBlindly(msg, leaderId);
                     failures++;
+                }
             }
         } catch (InterruptedException | JsonProcessingException e) {
             throw new RuntimeException(e);
