@@ -235,6 +235,29 @@ public class Server extends Node {
         }
     };
 
+    private void processAppendEntries(Message msg) {
+        int term = Integer.parseInt(msg.query("term"));
+        String leaderId = msg.query("leaderId");
+        int prevLogIndex = Integer.parseInt(msg.query("prevLogIndex"));
+        int prevLogTerm = Integer.parseInt(msg.query("prevLogTerm"));
+        int leaderCommit = Integer.parseInt(msg.query("leaderCommit"));
+        try {
+            LogEntry[] entries = mapper.readValue(msg.query("entries"), LogEntry[].class);
+            AppendEntriesResult res = appendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
+            if (entries.length == 0)
+                return;
+            Message response = new Message();
+            response.addHeader("type", "appendEntriesResponse");
+            response.add("term", res.getTerm());
+            response.add("success", res.isSuccess() ? 1 : 0);
+            if (res.isSuccess())
+                response.add("matchIndex", log.size() - 1);
+            sendBlindly(response, msg.queryHeader("sender"));
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     private void processMessage(Message msg) {
         switch (serverType) {
             case CANDIDATE: {
@@ -245,6 +268,7 @@ public class Server extends Node {
                         if (term >= currentTerm) {
                             serverType = ServerType.FOLLOWER;
                             System.out.println("Another server was quicker, reverting to follower state");
+                            processAppendEntries(msg);
                         }
                         break;
                     }
@@ -279,26 +303,7 @@ public class Server extends Node {
                         break;
                     }
                     case "appendEntries": {
-                        int term = Integer.parseInt(msg.query("term"));
-                        String leaderId = msg.query("leaderId");
-                        int prevLogIndex = Integer.parseInt(msg.query("prevLogIndex"));
-                        int prevLogTerm = Integer.parseInt(msg.query("prevLogTerm"));
-                        int leaderCommit = Integer.parseInt(msg.query("leaderCommit"));
-                        try {
-                            LogEntry[] entries = mapper.readValue(msg.query("entries"), LogEntry[].class);
-                            AppendEntriesResult res = appendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
-                            if (entries.length == 0)
-                                return;
-                            Message response = new Message();
-                            response.addHeader("type", "appendEntriesResponse");
-                            response.add("term", res.getTerm());
-                            response.add("success", res.isSuccess() ? 1 : 0);
-                            if (res.isSuccess())
-                                response.add("matchIndex", log.size() - 1);
-                            sendBlindly(response, msg.queryHeader("sender"));
-                        } catch (JsonProcessingException e) {
-                            throw new RuntimeException(e);
-                        }
+                        processAppendEntries(msg);
                         break;
                     }
                     default:
