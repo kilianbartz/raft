@@ -22,7 +22,9 @@ public class Server extends Node {
     // persistent state on all servers
 //    TODO: maybe make it really persistent?
     private String id = "";
-    private final ArrayList<String> cluster = new ArrayList<>();
+    private List<String> cluster = new ArrayList<>();
+    private List<String> clusterOld = new ArrayList<>();
+    private List<String> clusterNew = new ArrayList<>();
     private int currentTerm = 0;
     String votedFor = null;
     private final ArrayList<LogEntry> log = new ArrayList<>();
@@ -228,8 +230,18 @@ public class Server extends Node {
             response.addHeader("type", "appendEntriesResponse");
             response.add("term", res.getTerm());
             response.add("success", res.isSuccess() ? 1 : 0);
-            if (res.isSuccess())
+            if (res.isSuccess()){
                 response.add("matchIndex", log.size() - 1);
+                for (LogEntry entry : entries){
+                    // after server receives a new config, it is used for all future decisions
+                    //TODO: cNew implementieren
+                    if (entry.getKey().equals("config:cOldNew")){
+                        String[][] temp = mapper.readValue(entry.getValue(), String[][].class);
+                        clusterOld = Arrays.asList(temp[0]);
+                        clusterNew = Arrays.asList(temp[1]);
+                    }
+                }
+            }
             sendBlindly(response, msg.queryHeader("sender"));
         } catch (JsonProcessingException e) {
             throw new RuntimeException(e);
@@ -346,6 +358,25 @@ public class Server extends Node {
                         matchIndex.put(sender, _matchIndex);
                         nextIndex.put(sender, _matchIndex + 1);
                         updateLeaderCommitIndex();
+                        break;
+                    }
+                    case "changeConfig": {
+                        try {
+                            String cNew = msg.query("newConfig");
+                            clusterNew = Arrays.asList(mapper.readValue(cNew, String[].class));
+                            List<List<String>> temp = new ArrayList<>();
+                            temp.add(cluster);
+                            temp.add(clusterNew);
+                            String cOldNew = mapper.writeValueAsString(temp);
+                            LogEntry entry = new LogEntry(currentTerm, "config:cOldNew", cOldNew);
+                            synchronized (logLock){
+                                log.add(entry);
+                                clusterOld = cluster;
+                                cluster = null;
+                            }
+                        } catch (JsonProcessingException e) {
+                            throw new RuntimeException(e);
+                        }
                         break;
                     }
                     default:
