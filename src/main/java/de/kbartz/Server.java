@@ -20,7 +20,6 @@ public class Server extends Node {
 
 
     // persistent state on all servers
-//    TODO: maybe make it really persistent?
     private String id = "";
     private List<String> cluster = new ArrayList<>();
     private List<String> clusterOld = new ArrayList<>();
@@ -36,9 +35,11 @@ public class Server extends Node {
     private ServerType serverType = ServerType.FOLLOWER;
     private int voteTimeout = 0;
     private String leaderId;
-    private LinkedList<Message> queue = new LinkedList<>();
+    private final LinkedList<Message> queue = new LinkedList<>();
+    private LinkedList<GetRequest> getQueue = new LinkedList<>();
     private final Object lock = new Object();
     private final Object logLock = new Object();
+    private final Object getQueueLock = new Object();
 
     private int votesForMe = 0;
     private long lastRelevantTime = System.currentTimeMillis(); //only set when receiving valid appendEntries / granting vote
@@ -202,6 +203,10 @@ public class Server extends Node {
         }
         clientIndices.clear();
         lastUuids.clear();
+//        commit no-op at start of term to find out which entries are commited (§8)
+        synchronized (logLock) {
+            log.add(new LogEntry(currentTerm, "noop", ""));
+        }
     }
 
     private final Runnable electionTimeout = () -> {
@@ -286,7 +291,7 @@ public class Server extends Node {
                         if (voteGranted) {
                             votesForMe++;
                         }
-                        if (votesForMe > Math.ceil((cluster.size() + 1) / 2.))
+                        if (votesForMe > (cluster.size() + 1) / 2.)
                             wonElection();
                     }
                     default:
@@ -332,7 +337,6 @@ public class Server extends Node {
                             String sender = msg.queryHeader("sender");
                             String uuid = msg.query("uuid");
                             Pair<String, Boolean> lastOp = lastUuids.get(sender);
-                            System.out.println("aaa" + lastOp);
                             // already successfully executed earlier
                             if (lastOp != null && lastOp.first.equals(uuid) && lastOp.second) {
                                 Message successMessage = new Message();
@@ -347,6 +351,13 @@ public class Server extends Node {
 //                            set correct terms
                             for (LogEntry entry : entries) {
                                 entry.setTerm(currentTerm);
+                                if (entry.getKey().equals("noop")) {
+                                    Message denied = new Message();
+                                    denied.addHeader("type", "clientPutResponse");
+                                    denied.add("success", 0);
+                                    sendBlindly(denied, sender);
+                                    return;
+                                }
                             }
                             synchronized (logLock) {
                                 int startIndex = log.size();
@@ -358,6 +369,14 @@ public class Server extends Node {
                             System.out.println("leader received " + entries.size() + " entries from " + msg.queryHeader("sender"));
                         } catch (JsonProcessingException e) {
                             throw new RuntimeException(e);
+                        }
+                        break;
+                    }
+                    case "clientGet": {
+                        String sender = msg.queryHeader("sender");
+                        String key = msg.query("key");
+                        synchronized (getQueueLock) {
+                            getQueue.offer(new GetRequest(sender, key));
                         }
                         break;
                     }
@@ -376,6 +395,22 @@ public class Server extends Node {
                         matchIndex.put(sender, _matchIndex);
                         nextIndex.put(sender, _matchIndex + 1);
                         updateLeaderCommitIndex();
+                        synchronized (getQueueLock) {
+                            if (getQueue.peek() != null) {
+                                GetRequest getRequest = getQueue.peek();
+                                getRequest.increment();
+                                if (getRequest.getCounter() > (cluster.size() + 1) / 2.) {
+                                    getRequest = getQueue.poll();
+                                    Message reply = new Message();
+                                    reply.addHeader("type", "clientGetResponse");
+                                    String key = getRequest.getKey();
+                                    reply.add("key", key);
+                                    reply.add("value", stateMachine.get(key));
+                                    reply.add("success", 1);
+                                    sendBlindly(reply, getRequest.getClient());
+                                }
+                            }
+                        }
                         break;
                     }
                     case "changeConfig": {
@@ -454,7 +489,7 @@ public class Server extends Node {
                     counter++;
                 }
             }
-            if (counter > Math.ceil((cluster.size() + 1) / 2.)) {
+            if (counter > (cluster.size() + 1) / 2.) {
                 commit(commitIndex, nextCommitIndex);
                 commitIndex = nextCommitIndex;
                 System.out.println("leader: new commitIndex" + commitIndex);

@@ -1,64 +1,59 @@
 package de.kbartz;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.oxoo2a.sim4da.Message;
 import org.oxoo2a.sim4da.Node;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
-import java.util.UUID;
 
 public class TestClient extends Node {
 
     protected final String recipient;
-    private final List<LogEntry> log;
+    private final Message[] messages;
     private final List<String> cluster;
     ObjectMapper mapper = new ObjectMapper();
     public int successes = 0;
     public int failures = 0;
     protected final String id;
-    protected final static int INITIAL_WAIT_TIME = 500;
-    protected final static int TIMEOUT = 700;
-    private final boolean waitForSuccess = true;
-    private final Object lock = new Object();
+    protected int initialWaitTime = 500;
+    public List<Message> responses = new ArrayList<>();
 
-    public TestClient(String id, List<LogEntry> log, String recipient, List<String> cluster) {
+    public TestClient(String id, Message[] messages, String recipient, List<String> cluster) {
         super(id);
-        this.log = log;
+        this.messages = messages;
         this.recipient = recipient;
         this.id = id;
         this.cluster = cluster;
     }
 
+    public TestClient(String id, Message[] messages, String recipient, List<String> cluster, int initialWaitTime) {
+        super(id);
+        this.messages = messages;
+        this.recipient = recipient;
+        this.id = id;
+        this.cluster = cluster;
+        this.initialWaitTime = initialWaitTime;
+    }
+
+
     @Override
     protected void engage() {
         try {
-            Thread.sleep(INITIAL_WAIT_TIME);
-            Message msg = new Message();
-            msg.addHeader("type", "clientPut");
-            msg.add("entries", mapper.writeValueAsString(log));
-            msg.add("uuid", UUID.randomUUID().toString());
-            sendBlindly(msg, recipient);
-            long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < TIMEOUT) {
+            Thread.sleep(initialWaitTime);
+            for (Message message : messages) {
+                sendBlindly(message, recipient);
+//                wait for response before sending next message
                 Message m = receive();
+                responses.add(m);
                 System.out.println("Client " + this.id + " received " + m);
                 if (m.query("success").equals("1"))
                     successes++;
                 else {
-                    String leaderId = m.query("leaderId");
-                    sendBlindly(msg, leaderId);
                     failures++;
                 }
             }
-            //timeout for message back
-            if (successes == 0 && failures == 0) {
-                Random randomizer = new Random();
-                String random = cluster.get(randomizer.nextInt(cluster.size()));
-                sendBlindly(msg, random);
-            }
-        } catch (InterruptedException | JsonProcessingException e) {
+        } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
     }
