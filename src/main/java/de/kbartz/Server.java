@@ -47,6 +47,7 @@ public class Server extends Node {
     private final HashMap<String, Integer> nextIndex = new HashMap<>();
     private final HashMap<String, Integer> matchIndex = new HashMap<>();
     private final HashMap<String, Pair<Integer, Integer>> clientIndices = new HashMap<>();
+    private final HashMap<String, Pair<String, Boolean>> lastUuids = new HashMap<>();
     private Thread heartbeatThread;
 
     public Server(String name, ArrayList<String> cluster) {
@@ -199,6 +200,8 @@ public class Server extends Node {
             nextIndex.put(member, log.size());
             matchIndex.put(member, 0);
         }
+        clientIndices.clear();
+        lastUuids.clear();
     }
 
     private final Runnable electionTimeout = () -> {
@@ -230,12 +233,12 @@ public class Server extends Node {
             response.addHeader("type", "appendEntriesResponse");
             response.add("term", res.getTerm());
             response.add("success", res.isSuccess() ? 1 : 0);
-            if (res.isSuccess()){
+            if (res.isSuccess()) {
                 response.add("matchIndex", log.size() - 1);
-                for (LogEntry entry : entries){
+                for (LogEntry entry : entries) {
                     // after server receives a new config, it is used for all future decisions
                     //TODO: cNew implementieren
-                    if (entry.getKey().equals("config:cOldNew")){
+                    if (entry.getKey().equals("config:cOldNew")) {
                         String[][] temp = mapper.readValue(entry.getValue(), String[][].class);
                         clusterOld = Arrays.asList(temp[0]);
                         clusterNew = Arrays.asList(temp[1]);
@@ -326,6 +329,20 @@ public class Server extends Node {
                 switch (msg.queryHeader("type")) {
                     case "clientPut": {
                         try {
+                            String sender = msg.queryHeader("sender");
+                            String uuid = msg.query("uuid");
+                            Pair<String, Boolean> lastOp = lastUuids.get(sender);
+                            System.out.println("aaa" + lastOp);
+                            // already successfully executed earlier
+                            if (lastOp != null && lastOp.first.equals(uuid) && lastOp.second) {
+                                Message successMessage = new Message();
+                                successMessage.addHeader("type", "clientPutResponse");
+                                successMessage.add("success", 1);
+                                successMessage.add("entries", msg.query("entries"));
+                                sendBlindly(successMessage, sender);
+                                lastUuids.get(sender).second = true;
+                                return;
+                            }
                             List<LogEntry> entries = Arrays.asList(mapper.readValue(msg.query("entries"), LogEntry[].class));
 //                            set correct terms
                             for (LogEntry entry : entries) {
@@ -335,7 +352,8 @@ public class Server extends Node {
                                 int startIndex = log.size();
                                 int endIndex = startIndex + entries.size() - 1;
                                 log.addAll(entries);
-                                clientIndices.put(msg.queryHeader("sender"), new Pair<>(startIndex, endIndex));
+                                clientIndices.put(sender, new Pair<>(startIndex, endIndex));
+                                lastUuids.put(sender, new Pair<>(uuid, false));
                             }
                             System.out.println("leader received " + entries.size() + " entries from " + msg.queryHeader("sender"));
                         } catch (JsonProcessingException e) {
@@ -369,7 +387,7 @@ public class Server extends Node {
                             temp.add(clusterNew);
                             String cOldNew = mapper.writeValueAsString(temp);
                             LogEntry entry = new LogEntry(currentTerm, "config:cOldNew", cOldNew);
-                            synchronized (logLock){
+                            synchronized (logLock) {
                                 log.add(entry);
                                 clusterOld = cluster;
                                 cluster = null;
@@ -465,6 +483,7 @@ public class Server extends Node {
                 }
                 for (String client : safeToRemove) {
                     clientIndices.remove(client);
+                    lastUuids.get(client).second = true;
                 }
                 return true;
             }

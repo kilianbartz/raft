@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.oxoo2a.sim4da.Simulator;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -22,7 +23,7 @@ public class TestClientAppends {
         ArrayList<LogEntry> log = new ArrayList<>();
         log.add(new LogEntry("x", "1"));
         log.add(new LogEntry("y", "2"));
-        TestClient client = new TestClient("client", log, "fast");
+        TestClient client = new TestClient("client", log, "fast", members);
         Simulator sim = Simulator.getInstance();
         sim.simulate(1);
         sim.shutdown();
@@ -82,7 +83,7 @@ public class TestClientAppends {
         ArrayList<LogEntry> log = new ArrayList<>();
         log.add(new LogEntry("x", "1"));
         log.add(new LogEntry("y", "2"));
-        TestClient client = new TestClient("client", log, "slow");
+        TestClient client = new TestClient("client", log, "slow", members);
         Simulator sim = Simulator.getInstance();
         sim.simulate(1);
         sim.shutdown();
@@ -92,5 +93,23 @@ public class TestClientAppends {
         assertEquals(1, client.successes);
     }
 
-
+    @Test
+    void testSameUuid() {
+        ArrayList<String> members = new ArrayList<>();
+        members.add("fast");
+        members.add("slow");
+        Server s1 = new Server("fast", 50, members);
+        Server s3 = new Server("slow", 150, members);
+        ArrayList<LogEntry> log = new ArrayList<>();
+        log.add(new LogEntry("x", "1"));
+        log.add(new LogEntry("y", "2"));
+        ArrayList<Pair<List<LogEntry>, String>> temp = new ArrayList<>();
+        temp.add(new Pair<>(log, "asdf"));
+        temp.add(new Pair<>(log, "asdf"));
+        TestClient client = new TestClientMultiple("client", temp, "fast", members, true);
+        Simulator sim = Simulator.getInstance();
+        sim.simulate(1);
+        assertEquals(2, client.successes);
+        assertEquals(2, s1.getLog().size());
+    }
 }

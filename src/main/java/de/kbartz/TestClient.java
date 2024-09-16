@@ -6,32 +6,42 @@ import org.oxoo2a.sim4da.Message;
 import org.oxoo2a.sim4da.Node;
 
 import java.util.List;
+import java.util.Random;
+import java.util.UUID;
 
 public class TestClient extends Node {
 
-    private final String recipient;
+    protected final String recipient;
     private final List<LogEntry> log;
+    private final List<String> cluster;
     ObjectMapper mapper = new ObjectMapper();
     public int successes = 0;
     public int failures = 0;
-    private final String id;
+    protected final String id;
+    protected final static int INITIAL_WAIT_TIME = 500;
+    protected final static int TIMEOUT = 700;
+    private final boolean waitForSuccess = true;
+    private final Object lock = new Object();
 
-    public TestClient(String id, List<LogEntry> log, String recipient) {
+    public TestClient(String id, List<LogEntry> log, String recipient, List<String> cluster) {
         super(id);
         this.log = log;
         this.recipient = recipient;
         this.id = id;
+        this.cluster = cluster;
     }
 
     @Override
     protected void engage() {
         try {
-            Thread.sleep(500);
+            Thread.sleep(INITIAL_WAIT_TIME);
             Message msg = new Message();
             msg.addHeader("type", "clientPut");
             msg.add("entries", mapper.writeValueAsString(log));
+            msg.add("uuid", UUID.randomUUID().toString());
             sendBlindly(msg, recipient);
-            while (true) {
+            long start = System.currentTimeMillis();
+            while (System.currentTimeMillis() - start < TIMEOUT) {
                 Message m = receive();
                 System.out.println("Client " + this.id + " received " + m);
                 if (m.query("success").equals("1"))
@@ -41,6 +51,12 @@ public class TestClient extends Node {
                     sendBlindly(msg, leaderId);
                     failures++;
                 }
+            }
+            //timeout for message back
+            if (successes == 0 && failures == 0) {
+                Random randomizer = new Random();
+                String random = cluster.get(randomizer.nextInt(cluster.size()));
+                sendBlindly(msg, random);
             }
         } catch (InterruptedException | JsonProcessingException e) {
             throw new RuntimeException(e);
