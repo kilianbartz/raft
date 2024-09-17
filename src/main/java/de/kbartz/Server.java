@@ -24,6 +24,10 @@ public class Server extends Node {
     private List<String> cluster = new ArrayList<>();
     private List<String> clusterOld = new ArrayList<>();
     private List<String> clusterNew = new ArrayList<>();
+    private List<String> clusterOldNew = new ArrayList<>();
+    private List<String> nonVotingMembers = new ArrayList<>();
+    private int cOldNewIndex = -1;
+
     private int currentTerm = 0;
     String votedFor = null;
     private final ArrayList<LogEntry> log = new ArrayList<>();
@@ -36,10 +40,8 @@ public class Server extends Node {
     private int voteTimeout = 0;
     private String leaderId;
     private final LinkedList<Message> queue = new LinkedList<>();
-    private LinkedList<GetRequest> getQueue = new LinkedList<>();
     private final Object lock = new Object();
     private final Object logLock = new Object();
-    private final Object getQueueLock = new Object();
 
     private int votesForMe = 0;
     private long lastRelevantTime = System.currentTimeMillis(); //only set when receiving valid appendEntries / granting vote
@@ -51,12 +53,16 @@ public class Server extends Node {
     private final HashMap<String, Pair<String, Boolean>> lastUuids = new HashMap<>();
     private Thread heartbeatThread;
 
+    private final LinkedList<GetRequest> getQueue = new LinkedList<>();
+    private final Object getQueueLock = new Object();
+    private MembershipchangeState membershipChangeState = MembershipchangeState.REGULAR;
+
     public Server(String name, ArrayList<String> cluster) {
         super(name);
         this.id = name;
         Random r = new Random();
         voteTimeout = r.nextInt(voteTimeoutUpperLimit - voteTimeoutLowerLimit + 1) + voteTimeoutLowerLimit;
-        setCluster(cluster);
+        setCluster(cluster, this.cluster);
     }
 
     //    for testing purposes
@@ -64,12 +70,12 @@ public class Server extends Node {
         super(name);
         this.id = name;
         this.voteTimeout = voteTimeout;
-        setCluster(cluster);
+        setCluster(cluster, this.cluster);
     }
 
-    private void setCluster(ArrayList<String> cluster) {
-        this.cluster.addAll(cluster);
-        this.cluster.removeIf(member -> member.equals(this.id));
+    private void setCluster(List<String> cluster, List<String> dest) {
+        dest.addAll(cluster);
+        dest.removeIf(member -> member.equals(this.id));
     }
 
     public AppendEntriesResult appendEntries(int term, String leaderId, int prevLogIndex, int prevLogTerm, LogEntry[] entries, int leaderCommit) {
@@ -181,7 +187,8 @@ public class Server extends Node {
 
     private final Runnable heartbeatRunnable = () -> {
         while (!Thread.interrupted()) {
-            for (String member : cluster) {
+            List<String> members = membershipChangeState == MembershipchangeState.IN_JOINT_CONSENSUS ? clusterOldNew : cluster;
+            for (String member : members) {
                 sendHeartBeat(member);
             }
             try {
@@ -241,12 +248,18 @@ public class Server extends Node {
             if (res.isSuccess()) {
                 response.add("matchIndex", log.size() - 1);
                 for (LogEntry entry : entries) {
-                    // after server receives a new config, it is used for all future decisions
-                    //TODO: cNew implementieren
+                    // after server receives a new config, it is used for all future decisions (a server always uses the latest configuration in its log, regardless of whether the entry is committed)
                     if (entry.getKey().equals("config:cOldNew")) {
-                        String[][] temp = mapper.readValue(entry.getValue(), String[][].class);
-                        clusterOld = Arrays.asList(temp[0]);
-                        clusterNew = Arrays.asList(temp[1]);
+                        String[][] cOldNewSer = mapper.readValue(entry.getValue(), String[][].class);
+                        clusterOld = Arrays.asList(cOldNewSer[0]);
+                        clusterNew = Arrays.asList(cOldNewSer[1]);
+                    }
+                    if (entry.getKey().equals("config:cNew")) {
+                        String[] members = mapper.readValue(entry.getValue(), String[].class);
+                        cluster = Arrays.asList(members);
+                        clusterOld = null;
+                        clusterNew = null;
+                        membershipChangeState = MembershipchangeState.REGULAR;
                     }
                 }
             }
@@ -380,6 +393,19 @@ public class Server extends Node {
                         }
                         break;
                     }
+                    case "configChange": {
+                        try {
+                            setCluster(Arrays.asList(mapper.readValue(msg.query("cluster"), String[].class)), clusterNew);
+                            nonVotingMembers = clusterNew.stream().filter(item -> cluster.contains(item)).toList();
+                            if (nonVotingMembers.isEmpty())
+                                membershipChangeState = MembershipchangeState.IN_JOINT_CONSENSUS;
+                            else
+                                membershipChangeState = MembershipchangeState.NEW_MEMBERS_CATCH_UP;
+                        } catch (JsonProcessingException e) {
+                            throw new RuntimeException(e);
+                        }
+                        break;
+                    }
                     case "appendEntriesResponse": {
                         String sender = msg.queryHeader("sender");
                         if (!msg.query("success").equals("1")) {
@@ -457,22 +483,6 @@ public class Server extends Node {
         }
     };
 
-
-    //    for testing purposes
-    public void sendVote(int term, String id) {
-        sendVote(term, id, 1, 1);
-    }
-
-    private void sendVote(int term, String id, int lastLogIndex, int lastLogTerm) {
-        RequestVoteResult res = requestVote(term, id, lastLogIndex, lastLogTerm);
-        Message response = new Message();
-        response.addHeader("type", "requestVoteResponse");
-        response.add("term", res.getTerm());
-        response.add("voteGranted", res.isVoteGranted() ? 1 : 0);
-        System.out.println(this.id + " replied to vote with " + res.isVoteGranted() + " at " + System.currentTimeMillis());
-        sendBlindly(response, id);
-    }
-
     public void commit(int fromIndex, int toIndex) {
         System.out.println(this.id + " commited from " + fromIndex + " to " + toIndex);
         for (int i = fromIndex; i <= toIndex; i++) {
@@ -481,15 +491,34 @@ public class Server extends Node {
         }
     }
 
-    public boolean updateLeaderCommitIndex() {
-        for (int nextCommitIndex = log.size() - 1; nextCommitIndex > commitIndex; nextCommitIndex--) {
-            int counter = 1;
+    private boolean isCommitMajority(int commitIndex) {
+        int counter = 1;
+        if (membershipChangeState == MembershipchangeState.REGULAR) {
             for (String member : cluster) {
-                if (matchIndex.get(member) >= nextCommitIndex) {
+                if (matchIndex.get(member) >= commitIndex) {
                     counter++;
                 }
             }
-            if (counter > (cluster.size() + 1) / 2.) {
+            return counter > (cluster.size() + 1) / 2.;
+        }
+        int oldCounter = 1;
+        int newCounter = 1;
+        for (String member : clusterOld) {
+            if (matchIndex.get(member) >= commitIndex) {
+                oldCounter++;
+            }
+        }
+        for (String member : clusterNew) {
+            if (matchIndex.get(member) >= commitIndex) {
+                newCounter++;
+            }
+        }
+        return (oldCounter > (clusterOld.size() + 1) / 2.) && (newCounter > (clusterNew.size() + 1) / 2.);
+    }
+
+    public void updateLeaderCommitIndex() {
+        for (int nextCommitIndex = log.size() - 1; nextCommitIndex > commitIndex; nextCommitIndex--) {
+            if (isCommitMajority(nextCommitIndex)) {
                 commit(commitIndex, nextCommitIndex);
                 commitIndex = nextCommitIndex;
                 System.out.println("leader: new commitIndex" + commitIndex);
@@ -520,10 +549,26 @@ public class Server extends Node {
                     clientIndices.remove(client);
                     lastUuids.get(client).second = true;
                 }
-                return true;
+//                cOldNew config is commited
+                if (inJointConsensus && commitIndex >= cOldNewIndex) {
+                    synchronized (logLock) {
+                        try {
+                            log.add(new LogEntry(currentTerm, "config:cNew", mapper.writeValueAsString(clusterNew)));
+                            cluster = clusterNew;
+                            clusterOld = null;
+                            clusterNew = null;
+                            inJointConsensus = false;
+                            if (!cluster.contains(this.id)) {
+                                serverType = ServerType.FOLLOWER;
+                            }
+                        } catch (JsonProcessingException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                }
+                return;
             }
         }
-        return false;
     }
 
     @Override
