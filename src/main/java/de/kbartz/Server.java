@@ -6,13 +6,14 @@ import org.oxoo2a.sim4da.Message;
 import org.oxoo2a.sim4da.Node;
 
 import java.util.*;
+import java.util.stream.Stream;
 
 @SuppressWarnings({"BusyWait", "InfiniteLoopStatement"})
 public class Server extends Node {
 
 //    TODO: maybe use Virtual Threads https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html#GUID-A0E4C745-6BC3-4DAE-87ED-E4A094D20A38
 
-    static int voteTimeoutLowerLimit = 150;
+    static int voteTimeoutLowerLimit = 30;
     static int voteTimeoutUpperLimit = 300;
     static final int heartbeatInterval = 30;
 
@@ -24,9 +25,10 @@ public class Server extends Node {
     private List<String> cluster = new ArrayList<>();
     private List<String> clusterOld = new ArrayList<>();
     private List<String> clusterNew = new ArrayList<>();
-    private List<String> clusterOldNew = new ArrayList<>();
+    private List<String> membersToReplicateTo = cluster;
     private List<String> nonVotingMembers = new ArrayList<>();
     private int cOldNewIndex = -1;
+    private int cNewIndex = -1;
 
     private int currentTerm = 0;
     String votedFor = null;
@@ -40,10 +42,12 @@ public class Server extends Node {
     private int voteTimeout = 0;
     private String leaderId;
     private final LinkedList<Message> queue = new LinkedList<>();
-    private final Object lock = new Object();
+    private final Object messageLock = new Object();
     private final Object logLock = new Object();
 
     private int votesForMe = 0;
+    private int votesForMeOld = 0;
+    private int votesForMeNew = 0;
     private long lastRelevantTime = System.currentTimeMillis(); //only set when receiving valid appendEntries / granting vote
 
     // volatile state on leaders, to be reinitialized after election
@@ -124,7 +128,13 @@ public class Server extends Node {
             result.setVoteGranted(false);
             return result;
         }
-        lastRelevantTime = System.currentTimeMillis();
+        long time = System.currentTimeMillis();
+        if (time - lastRelevantTime < voteTimeoutLowerLimit) {
+            System.out.println(this.id + " rejects because leader just contacted " + this.id + " " + (time - lastRelevantTime) + " ms ago");
+            result.setVoteGranted(false);
+            return result;
+        }
+        lastRelevantTime = time;
         if (votedFor == null || votedFor.equals(candidateId)) {
             result.setVoteGranted(true);
             votedFor = candidateId;
@@ -144,8 +154,10 @@ public class Server extends Node {
         currentTerm++;
         System.out.println(this.id + " started election in term " + currentTerm + " (" + System.currentTimeMillis() + ")");
         votedFor = id;
-        synchronized (lock) {
+        synchronized (messageLock) {
             votesForMe = 1;
+            votesForMeNew = 1;
+            votesForMeOld = 1;
         }
         Message msg = new Message();
         msg.addHeader("type", "requestVote");
@@ -187,8 +199,7 @@ public class Server extends Node {
 
     private final Runnable heartbeatRunnable = () -> {
         while (!Thread.interrupted()) {
-            List<String> members = membershipChangeState == MembershipchangeState.IN_JOINT_CONSENSUS ? clusterOldNew : cluster;
-            for (String member : members) {
+            for (String member : membersToReplicateTo) {
                 sendHeartBeat(member);
             }
             try {
@@ -222,7 +233,7 @@ public class Server extends Node {
                 Thread.sleep(this.voteTimeout);
                 if (serverType == ServerType.LEADER)
                     continue;
-                synchronized (lock) {
+                synchronized (messageLock) {
                     if (System.currentTimeMillis() - lastRelevantTime > voteTimeout)
                         election();
                 }
@@ -302,10 +313,26 @@ public class Server extends Node {
                         boolean voteGranted = msg.query("voteGranted").equals("1");
                         System.out.println(this.id + " received reponse from " + msg.queryHeader("sender") + " for term " + term + ": " + voteGranted + " (" + System.currentTimeMillis() + ")");
                         if (voteGranted) {
-                            votesForMe++;
+                            if (membershipChangeState == MembershipchangeState.REGULAR)
+                                votesForMe++;
+                            else {
+                                String sender = msg.queryHeader("sender");
+                                if (clusterOld.contains(sender))
+                                    votesForMeOld++;
+                                if (clusterNew.contains(sender))
+                                    votesForMeNew++;
+                            }
+
                         }
-                        if (votesForMe > (cluster.size() + 1) / 2.)
-                            wonElection();
+                        if (membershipChangeState == MembershipchangeState.REGULAR) {
+                            if (votesForMe > (cluster.size() + 1) / 2.)
+                                wonElection();
+                        }
+                        if (membershipChangeState == MembershipchangeState.IN_JOINT_CONSENSUS) {
+                            if ((votesForMeOld > (clusterOld.size() + 1) / 2.) && (votesForMeNew > (clusterNew.size() + 1) / 2.))
+                                wonElection();
+                        }
+
                     }
                     default:
                         return;
@@ -401,6 +428,7 @@ public class Server extends Node {
                                 membershipChangeState = MembershipchangeState.IN_JOINT_CONSENSUS;
                             else
                                 membershipChangeState = MembershipchangeState.NEW_MEMBERS_CATCH_UP;
+                            membersToReplicateTo = Stream.concat(cluster.stream(), nonVotingMembers.stream()).toList();
                         } catch (JsonProcessingException e) {
                             throw new RuntimeException(e);
                         }
@@ -468,10 +496,10 @@ public class Server extends Node {
 
     private final Runnable processMessages = () -> {
         while (true) {
-            synchronized (lock) {
+            synchronized (messageLock) {
                 try {
                     while (queue.peek() == null)
-                        lock.wait();
+                        messageLock.wait();
                     while (queue.peek() != null) {
                         Message m = queue.poll();
                         processMessage(m);
@@ -492,28 +520,30 @@ public class Server extends Node {
     }
 
     private boolean isCommitMajority(int commitIndex) {
-        int counter = 1;
-        if (membershipChangeState == MembershipchangeState.REGULAR) {
-            for (String member : cluster) {
+        if (membershipChangeState == MembershipchangeState.IN_JOINT_CONSENSUS) {
+            int oldCounter = 1;
+            int newCounter = 1;
+            for (String member : clusterOld) {
                 if (matchIndex.get(member) >= commitIndex) {
-                    counter++;
+                    oldCounter++;
                 }
             }
-            return counter > (cluster.size() + 1) / 2.;
+            for (String member : clusterNew) {
+                if (matchIndex.get(member) >= commitIndex) {
+                    newCounter++;
+                }
+            }
+            return (oldCounter > (clusterOld.size() + 1) / 2.) && (newCounter > (clusterNew.size() + 1) / 2.);
         }
-        int oldCounter = 1;
-        int newCounter = 1;
-        for (String member : clusterOld) {
+        //        if leader is not part of new config, do not count server for majority
+        int counter = cluster.contains(this.id) ? 1 : 0;
+        int addLeader = counter;
+        for (String member : cluster) {
             if (matchIndex.get(member) >= commitIndex) {
-                oldCounter++;
+                counter++;
             }
         }
-        for (String member : clusterNew) {
-            if (matchIndex.get(member) >= commitIndex) {
-                newCounter++;
-            }
-        }
-        return (oldCounter > (clusterOld.size() + 1) / 2.) && (newCounter > (clusterNew.size() + 1) / 2.);
+        return counter > (cluster.size() + addLeader) / 2.;
     }
 
     public void updateLeaderCommitIndex() {
@@ -521,7 +551,7 @@ public class Server extends Node {
             if (isCommitMajority(nextCommitIndex)) {
                 commit(commitIndex, nextCommitIndex);
                 commitIndex = nextCommitIndex;
-                System.out.println("leader: new commitIndex" + commitIndex);
+                System.out.println("leader: new commitIndex " + commitIndex);
 //                responses to clients
 //                TODO: no synchronization needed?
                 ArrayList<String> safeToRemove = new ArrayList<>();
@@ -550,20 +580,27 @@ public class Server extends Node {
                     lastUuids.get(client).second = true;
                 }
 //                cOldNew config is commited
-                if (inJointConsensus && commitIndex >= cOldNewIndex) {
+                if (membershipChangeState == MembershipchangeState.IN_JOINT_CONSENSUS && commitIndex >= cOldNewIndex) {
                     synchronized (logLock) {
                         try {
                             log.add(new LogEntry(currentTerm, "config:cNew", mapper.writeValueAsString(clusterNew)));
                             cluster = clusterNew;
                             clusterOld = null;
                             clusterNew = null;
-                            inJointConsensus = false;
-                            if (!cluster.contains(this.id)) {
-                                serverType = ServerType.FOLLOWER;
-                            }
+                            cNewIndex = log.size() - 1;
+                            membershipChangeState = MembershipchangeState.REGULAR;
+                            cOldNewIndex = -1;
                         } catch (JsonProcessingException e) {
                             throw new RuntimeException(e);
                         }
+                    }
+                }
+                if (membershipChangeState == MembershipchangeState.REGULAR && cNewIndex != -1 && commitIndex >= cNewIndex) {
+                    cNewIndex = -1;
+                    if (!cluster.contains(this.id)) {
+                        serverType = ServerType.FOLLOWER;
+                        heartbeatThread.interrupt();
+                        heartbeatThread = null;
                     }
                 }
                 return;
@@ -577,9 +614,9 @@ public class Server extends Node {
         new Thread(processMessages).start();
         while (true) {
             Message m = receive();
-            synchronized (lock) {
+            synchronized (messageLock) {
                 queue.offer(m);
-                lock.notify();
+                messageLock.notify();
             }
         }
     }
