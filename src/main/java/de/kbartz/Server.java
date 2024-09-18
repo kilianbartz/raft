@@ -78,6 +78,7 @@ public class Server extends Node {
     }
 
     private void setCluster(List<String> cluster, List<String> dest) {
+        dest.clear();
         dest.addAll(cluster);
         dest.removeIf(member -> member.equals(this.id));
     }
@@ -119,6 +120,11 @@ public class Server extends Node {
         result.setTerm(currentTerm);
         if (term < currentTerm) {
             System.out.println(this.id + " rejects because of term too small");
+            result.setVoteGranted(false);
+            return result;
+        }
+        if (!cluster.contains(candidateId)) {
+            System.out.println(this.id + " rejects because candidate is not part of the cluster");
             result.setVoteGranted(false);
             return result;
         }
@@ -264,13 +270,15 @@ public class Server extends Node {
                         String[][] cOldNewSer = mapper.readValue(entry.getValue(), String[][].class);
                         clusterOld = Arrays.asList(cOldNewSer[0]);
                         clusterNew = Arrays.asList(cOldNewSer[1]);
+                        membershipChangeState = MembershipchangeState.IN_JOINT_CONSENSUS;
                     }
                     if (entry.getKey().equals("config:cNew")) {
                         String[] members = mapper.readValue(entry.getValue(), String[].class);
                         cluster = Arrays.asList(members);
-                        clusterOld = null;
-                        clusterNew = null;
+                        clusterOld = new ArrayList<>();
+                        clusterNew = new ArrayList<>();
                         membershipChangeState = MembershipchangeState.REGULAR;
+                        membersToReplicateTo = cluster;
                     }
                 }
             }
@@ -286,12 +294,33 @@ public class Server extends Node {
             heartbeatThread.interrupt();
             heartbeatThread = null;
         }
+        System.out.println(this.id + " reverted to follower");
+    }
+
+    private void advanceToJointConsensus() {
+        membershipChangeState = MembershipchangeState.IN_JOINT_CONSENSUS;
+        clusterOld = cluster;
+//        add leader id, so that every follower gets list of complete cluster
+        clusterOld.add(this.id);
+        membersToReplicateTo = Stream.concat(clusterOld.stream(), clusterNew.stream()).distinct().filter(member -> !member.equals(this.id)).toList();
+        String[][] cOldNewSer = new String[][]{clusterOld.toArray(new String[0]), clusterNew.toArray(new String[0])};
+        try {
+            LogEntry e = new LogEntry(currentTerm, "config:cOldNew", mapper.writeValueAsString(cOldNewSer));
+            synchronized (logLock) {
+                log.add(e);
+            }
+        } catch (JsonProcessingException ex) {
+            throw new RuntimeException(ex);
+        }
+        System.out.println("System advanced to joint consensus " + clusterOld + " | " + clusterNew);
+        System.out.println("replicating to " + membersToReplicateTo);
     }
 
     private void processMessage(Message msg) {
         int term = Integer.parseInt(Objects.requireNonNullElse(msg.query("term"), "0"));
         //        If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-        if (term > currentTerm) {
+        long time = System.currentTimeMillis();
+        if (time - lastRelevantTime > voteTimeoutLowerLimit && term > currentTerm && cluster.contains(msg.queryHeader("sender"))) {
             currentTerm = term;
 //            not voted for anyone in new term
             votedFor = null;
@@ -422,13 +451,20 @@ public class Server extends Node {
                     }
                     case "configChange": {
                         try {
-                            setCluster(Arrays.asList(mapper.readValue(msg.query("cluster"), String[].class)), clusterNew);
-                            nonVotingMembers = clusterNew.stream().filter(item -> cluster.contains(item)).toList();
-                            if (nonVotingMembers.isEmpty())
+                            System.out.println(this.id + " received cluster change request: " + msg.query("cluster"));
+                            clusterNew = Arrays.asList(mapper.readValue(msg.query("cluster"), String[].class));
+                            nonVotingMembers = new ArrayList<>(clusterNew.stream().filter(item -> !cluster.contains(item) && !item.equals(this.id)).toList());
+                            if (nonVotingMembers.isEmpty()) {
                                 membershipChangeState = MembershipchangeState.IN_JOINT_CONSENSUS;
-                            else
+                                advanceToJointConsensus();
+                            } else {
                                 membershipChangeState = MembershipchangeState.NEW_MEMBERS_CATCH_UP;
-                            membersToReplicateTo = Stream.concat(cluster.stream(), nonVotingMembers.stream()).toList();
+                                membersToReplicateTo = Stream.concat(cluster.stream(), nonVotingMembers.stream()).toList();
+                                for (String member : nonVotingMembers) {
+                                    nextIndex.put(member, log.size());
+                                    matchIndex.put(member, 0);
+                                }
+                            }
                         } catch (JsonProcessingException e) {
                             throw new RuntimeException(e);
                         }
@@ -448,7 +484,16 @@ public class Server extends Node {
                         int _matchIndex = Math.min(Integer.parseInt(msg.query("matchIndex")), log.size() - 1);
                         matchIndex.put(sender, _matchIndex);
                         nextIndex.put(sender, _matchIndex + 1);
+//                        nonVotingMember has caught up
+                        if (nonVotingMembers.contains(sender) && _matchIndex == log.size() - 1) {
+                            nonVotingMembers.remove(sender);
+                            if (nonVotingMembers.isEmpty()) {
+                                advanceToJointConsensus();
+                            }
+                        }
                         updateLeaderCommitIndex();
+
+//                        for clientGet (read) requests
                         synchronized (getQueueLock) {
                             if (getQueue.peek() != null) {
                                 GetRequest getRequest = getQueue.peek();
@@ -464,25 +509,6 @@ public class Server extends Node {
                                     sendBlindly(reply, getRequest.getClient());
                                 }
                             }
-                        }
-                        break;
-                    }
-                    case "changeConfig": {
-                        try {
-                            String cNew = msg.query("newConfig");
-                            clusterNew = Arrays.asList(mapper.readValue(cNew, String[].class));
-                            List<List<String>> temp = new ArrayList<>();
-                            temp.add(cluster);
-                            temp.add(clusterNew);
-                            String cOldNew = mapper.writeValueAsString(temp);
-                            LogEntry entry = new LogEntry(currentTerm, "config:cOldNew", cOldNew);
-                            synchronized (logLock) {
-                                log.add(entry);
-                                clusterOld = cluster;
-                                cluster = null;
-                            }
-                        } catch (JsonProcessingException e) {
-                            throw new RuntimeException(e);
                         }
                         break;
                     }
@@ -524,11 +550,13 @@ public class Server extends Node {
             int oldCounter = 1;
             int newCounter = 1;
             for (String member : clusterOld) {
+                if (member.equals(this.id)) continue;
                 if (matchIndex.get(member) >= commitIndex) {
                     oldCounter++;
                 }
             }
             for (String member : clusterNew) {
+                if (member.equals(this.id)) continue;
                 if (matchIndex.get(member) >= commitIndex) {
                     newCounter++;
                 }
@@ -538,12 +566,12 @@ public class Server extends Node {
         //        if leader is not part of new config, do not count server for majority
         int counter = cluster.contains(this.id) ? 1 : 0;
         int addLeader = counter;
-        for (String member : cluster) {
+        for (String member : membersToReplicateTo) {
             if (matchIndex.get(member) >= commitIndex) {
                 counter++;
             }
         }
-        return counter > (cluster.size() + addLeader) / 2.;
+        return counter > (membersToReplicateTo.size() + addLeader - nonVotingMembers.size()) / 2.;
     }
 
     public void updateLeaderCommitIndex() {
@@ -551,7 +579,7 @@ public class Server extends Node {
             if (isCommitMajority(nextCommitIndex)) {
                 commit(commitIndex, nextCommitIndex);
                 commitIndex = nextCommitIndex;
-                System.out.println("leader: new commitIndex " + commitIndex);
+                System.out.println("leader (" + this.id + "): new commitIndex " + commitIndex);
 //                responses to clients
 //                TODO: no synchronization needed?
                 ArrayList<String> safeToRemove = new ArrayList<>();
@@ -579,28 +607,28 @@ public class Server extends Node {
                     clientIndices.remove(client);
                     lastUuids.get(client).second = true;
                 }
+                System.out.println("nonVotingMembers left: " + nonVotingMembers.size());
 //                cOldNew config is commited
                 if (membershipChangeState == MembershipchangeState.IN_JOINT_CONSENSUS && commitIndex >= cOldNewIndex) {
                     synchronized (logLock) {
                         try {
                             log.add(new LogEntry(currentTerm, "config:cNew", mapper.writeValueAsString(clusterNew)));
-                            cluster = clusterNew;
-                            clusterOld = null;
-                            clusterNew = null;
+                            setCluster(clusterNew, cluster);
                             cNewIndex = log.size() - 1;
                             membershipChangeState = MembershipchangeState.REGULAR;
                             cOldNewIndex = -1;
+                            membersToReplicateTo = cluster;
                         } catch (JsonProcessingException e) {
                             throw new RuntimeException(e);
                         }
+                        System.out.println("System in new config: " + cluster + " | " + membersToReplicateTo);
                     }
                 }
                 if (membershipChangeState == MembershipchangeState.REGULAR && cNewIndex != -1 && commitIndex >= cNewIndex) {
                     cNewIndex = -1;
-                    if (!cluster.contains(this.id)) {
-                        serverType = ServerType.FOLLOWER;
-                        heartbeatThread.interrupt();
-                        heartbeatThread = null;
+                    if (!clusterNew.contains(this.id)) {
+                        System.out.println("new cluster does not contain leader " + this.id + ". stepping down.");
+                        becomeFollower();
                     }
                 }
                 return;
@@ -635,5 +663,17 @@ public class Server extends Node {
 
     public int getCommitIndex() {
         return commitIndex;
+    }
+
+    public List<String> getMembersToReplicateTo() {
+        return membersToReplicateTo;
+    }
+
+    public MembershipchangeState getMembershipChangeState() {
+        return membershipChangeState;
+    }
+
+    public void setCurrentTerm(int currentTerm) {
+        this.currentTerm = currentTerm;
     }
 }

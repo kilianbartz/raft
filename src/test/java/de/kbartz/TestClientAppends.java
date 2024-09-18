@@ -15,11 +15,11 @@ public class TestClientAppends {
 
     private final static ObjectMapper mapper = new ObjectMapper();
 
-    private Message convertToMessage(LogEntry[] logs) {
+    public static Message convertToMessage(LogEntry[] logs) {
         return convertToMessage(logs, UUID.randomUUID().toString());
     }
 
-    private Message convertToMessage(LogEntry[] logs, String uuid) {
+    public static Message convertToMessage(LogEntry[] logs, String uuid) {
         Message m = new Message();
         m.addHeader("type", "clientPut");
         try {
