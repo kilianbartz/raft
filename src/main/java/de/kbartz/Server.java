@@ -175,7 +175,7 @@ public class Server extends Node {
             sendBlindly(msg, member);
     }
 
-    public void sendHeartBeat(String member) {
+    public void sendHeartbeat(String member) {
         Message hb = new Message();
         hb.addHeader("type", "appendEntries");
         hb.add("term", currentTerm);
@@ -206,7 +206,7 @@ public class Server extends Node {
     private final Runnable heartbeatRunnable = () -> {
         while (!Thread.interrupted()) {
             for (String member : membersToReplicateTo) {
-                sendHeartBeat(member);
+                sendHeartbeat(member);
             }
             try {
                 Thread.sleep(heartbeatInterval);
@@ -477,7 +477,7 @@ public class Server extends Node {
                             System.out.println("appendEntriesResponse failed. Retrying");
 //                            avoid out of bounds
                             nextIndex.put(sender, Math.max(nextIndex.get(sender) - 1, 0));
-                            sendHeartBeat(sender);
+                            sendHeartbeat(sender);
                             return;
                         }
 //                        successful
